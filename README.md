@@ -37,7 +37,7 @@ tests/              # 单元测试、集成测试和评估测试
 docs/               # 架构、设计决策和实验记录
 ```
 
-当前仅建立项目边界和目录骨架，具体实现语言、模型供应商和存储方案将在需求明确后再确定。
+当前已进入第一阶段实现；后续记忆关系、组合和评估能力仍按路线逐步增加。
 
 ## 开发方式
 
@@ -61,4 +61,32 @@ docs/               # 架构、设计决策和实验记录
 
 ## 状态
 
-项目已完成初始化，当前进入 Agent Memory 架构调研阶段。
+项目已完成初始化，第一阶段“代码理解与概念编码”已实现，下一步可由用户进行功能与语义验收。
+
+## 第一阶段：代码理解与概念编码
+
+当前第一阶段采用“文件级语义概念”闭环：输入一个 Python 文件，默认目标生成约 3 个概念，硬上限为 9 个。概念名由 Qwen-Flash 生成，背景由模型阅读源码后提炼；AST 只用于提供可验证的符号和行号证据。
+
+```bash
+pip install -e '.[dashscope]'
+export DASHSCOPE_API_KEY='在 shell 中设置，不要写入代码或仓库'
+PYTHONPATH=src python3 -m memory_system.cli path/to/project \
+  --model qwen-flash \
+  --target-concepts 3 \
+  --max-concepts 9 \
+  --output concepts.json \
+  --database concepts.sqlite
+```
+
+Python API 示例：
+
+```python
+from memory_system import ConceptStore, analyze_path
+
+cards = analyze_path("path/to/project")
+with ConceptStore("concepts.sqlite") as store:
+    store.upsert_cards(cards)
+    results = store.search("用户")
+```
+
+概念卡片至少包含概念名、概念定义、源码背景、背景概念、源码位置、源码摘要和来源摘要。没有 `DASHSCOPE_API_KEY` 时会使用离线安全回退，方便语法和数据流测试；正式概念归纳应设置 Qwen-Flash 的环境变量。

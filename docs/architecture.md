@@ -2,7 +2,9 @@
 
 ## Initial scope
 
-第一阶段只定义领域边界，不预设具体数据库、向量模型或 Agent 框架。
+第一阶段实现本地代码理解与概念编码，不直接接入 MCP 或具体 Coding Agent。输入 Python 文件或目录，输出每个文件约 2~3 个、最多 9 个由 Qwen-Flash 归纳的高层概念卡片。
+
+当前实现采用 Python AST 提取可验证的源码事实，使用 DashScope Qwen-Flash 负责整文件语义概括，使用 JSON 作为交换格式，使用 SQLite FTS5 作为本地全文检索派生层。
 
 ## Memory lifecycle
 
