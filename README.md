@@ -96,9 +96,6 @@ with ConceptStore("concepts.sqlite") as store:
 - [产品设计问文档](产品设计问文档.md)
 - [架构说明](docs/architecture.md)
 - [架构图（交互式）](docs/architecture-diagram.html)
-- [Phase 1 设计](docs/phase1-design.md)
-- [Agent Memory 调研资料](docs/research/README.md)
-- [Agent Memory 社区讨论](docs/research/ai-agent-memory-community-discussion.md)
 
 ## 状态
 
