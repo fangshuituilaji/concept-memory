@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+# Phase 1 acceptance is Python-first. TS/JS can be enabled explicitly with
+# ``extensions=`` after installing the optional tree-sitter extra.
 DEFAULT_EXTENSIONS = frozenset({".py"})
 DEFAULT_IGNORED_DIRECTORIES = frozenset(
     {

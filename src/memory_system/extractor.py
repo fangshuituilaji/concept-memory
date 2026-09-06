@@ -141,3 +141,149 @@ def _module_name(relative_path: str) -> str:
     if parts and parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts) or path.stem
+
+
+# ---------------------------------------------------------------------------
+# Multi-language tree-sitter support
+# ---------------------------------------------------------------------------
+
+_TS_SYMBOL_TYPES = frozenset({
+    "class_declaration",
+    "function_declaration",
+    "method_definition",
+    "lexical_declaration",
+})
+_PY_LANG = None
+_TS_LANG = None
+_JS_LANG = None
+
+
+def _get_language(suffix: str):
+    global _PY_LANG, _TS_LANG, _JS_LANG
+    from tree_sitter import Language
+    if suffix == ".py":
+        if _PY_LANG is None:
+            import tree_sitter_python as tspython
+            _PY_LANG = Language(tspython.language())
+        return _PY_LANG
+    if suffix in (".ts", ".tsx"):
+        if _TS_LANG is None:
+            import tree_sitter_typescript as tsts
+            _TS_LANG = Language(tsts.language_typescript())
+        return _TS_LANG
+    if suffix in (".js", ".mjs"):
+        if _JS_LANG is None:
+            import tree_sitter_javascript as tsjs
+            _JS_LANG = Language(tsjs.language())
+        return _JS_LANG
+    return None
+
+
+class TreeSitterSourceAnalyzer:
+    """Extract source facts for Python, TypeScript and JavaScript files.
+
+    Uses the built-in ``ast`` module for Python (more accurate) and
+    tree-sitter for TS/JS. Both produce the same ``SourceFacts`` output.
+    """
+
+    def __init__(self):
+        self._python = PythonSourceAnalyzer()
+
+    def analyze(self, code_file: CodeFile) -> SourceFacts:
+        # Python stays on the stdlib AST path so the first-phase Python install
+        # does not require the optional Tree-sitter extras.
+        if code_file.path.suffix == ".py":
+            return self._python.analyze(code_file)
+        lang = _get_language(code_file.path.suffix)
+        if lang is None:
+            raise ConceptExtractionError(
+                f"Unsupported language: {code_file.path.suffix}"
+            )
+        return self._analyze_ts_js(code_file, lang)
+
+    def _analyze_ts_js(self, code_file: CodeFile, lang) -> SourceFacts:
+        from tree_sitter import Parser
+
+        parser = Parser(lang)
+        source_bytes = code_file.text.encode("utf-8")
+        tree = parser.parse(source_bytes)
+        root = tree.root_node
+        symbols: list[SymbolFact] = []
+        self._walk(root, source_bytes, scopes=(), class_scopes=(), out=symbols)
+        return SourceFacts(
+            file=code_file,
+            module=_module_name(code_file.relative_path),
+            source_digest=sha256(source_bytes).hexdigest(),
+            symbols=tuple(symbols),
+        )
+
+    def _walk(self, node, src: bytes, *, scopes, class_scopes, out: list[SymbolFact]) -> None:
+        if node.type == "class_declaration":
+            name_node = node.child_by_field_name("name")
+            name = src[name_node.start_byte:name_node.end_byte].decode() if name_node else ""
+            qualified = ".".join((*scopes, name)) if name else ".".join(scopes)
+            out.append(self._fact(node, src, "class", qualified))
+            child_scopes = (*scopes, name) if name else scopes
+            child_classes = (*class_scopes, name) if name else class_scopes
+            body = node.child_by_field_name("body")
+            if body:
+                for child in body.children:
+                    self._walk(child, src, scopes=child_scopes, class_scopes=child_classes, out=out)
+            return
+
+        if node.type == "function_declaration":
+            name_node = node.child_by_field_name("name")
+            name = src[name_node.start_byte:name_node.end_byte].decode() if name_node else ""
+            qualified = ".".join((*scopes, name)) if name else ".".join(scopes)
+            kind = "method" if scopes and scopes[-1] in class_scopes else "function"
+            out.append(self._fact(node, src, kind, qualified))
+            return
+
+        if node.type == "method_definition":
+            name_node = node.child_by_field_name("name")
+            name = src[name_node.start_byte:name_node.end_byte].decode() if name_node else ""
+            qualified = ".".join((*scopes, name)) if name else ".".join(scopes)
+            out.append(self._fact(node, src, "method", qualified))
+            return
+
+        if node.type == "lexical_declaration" or node.type == "variable_declaration":
+            # Arrow functions / consts assigned to functions
+            for child in node.children:
+                if child.type != "variable_declarator":
+                    continue
+                name_node = child.child_by_field_name("name")
+                value_node = child.child_by_field_name("value")
+                if not name_node or not value_node:
+                    continue
+                value_src = src[value_node.start_byte:value_node.end_byte].decode()
+                if not ("=>" in value_src or value_node.type == "arrow_function"):
+                    continue
+                name = src[name_node.start_byte:name_node.end_byte].decode()
+                qualified = ".".join((*scopes, name)) if name else ".".join(scopes)
+                out.append(SymbolFact(
+                    name=name,
+                    kind="function",
+                    qualified_name=qualified,
+                    start_line=node.start_point[0] + 1,
+                    end_line=node.end_point[0] + 1,
+                    signature=f"const {name} = {value_src[:80]}...",
+                    docstring=None,
+                ))
+            return
+
+        for child in node.children:
+            self._walk(child, src, scopes=scopes, class_scopes=class_scopes, out=out)
+
+    def _fact(self, node, src: bytes, kind: str, qualified_name: str) -> SymbolFact:
+        name_node = node.child_by_field_name("name")
+        name = src[name_node.start_byte:name_node.end_byte].decode() if name_node else qualified_name.rsplit(".", 1)[-1]
+        first_line = src[node.start_byte:].split(b"\n")[0].decode(errors="replace")[:120]
+        return SymbolFact(
+            name=name,
+            kind=kind,
+            qualified_name=qualified_name,
+            start_line=node.start_point[0] + 1,
+            end_line=node.end_point[0] + 1,
+            signature=first_line,
+            docstring=None,
+        )

@@ -65,8 +65,33 @@ def sort_values(values):
         self.assertTrue(all(card.kind is ConceptKind.CONCEPT for card in cards))
         self.assertTrue(all(card.background for card in cards))
         self.assertEqual(cards[0].metadata["evidence_symbols"], ["Catalog.find"])
+        self.assertEqual(cards[0].metadata["validation_status"], "validated")
+        self.assertEqual(cards[0].metadata["model_name"], "test-synthesizer")
         self.assertEqual(cards[0].location.start_line, 5)
         self.assertEqual(cards[0].location.end_line, 6)
+
+    def test_unanchored_evidence_is_retained_and_marked(self) -> None:
+        source = Path("src/memory_system/models.py").resolve()
+        class UnanchoredSynthesizer:
+            generated_by = "test-synthesizer"
+            def synthesize(self, facts):
+                return [
+                    ConceptDraft(
+                        name="未锚定概念",
+                        definition="一个无法由符号证据完全支持的概念。",
+                        background="该概念用于验证证据状态。",
+                        evidence=("Missing.symbol",),
+                    )
+                ]
+
+        cards = analyze_path(
+            source,
+            synthesizer=UnanchoredSynthesizer(),
+            config=ConceptSynthesisConfig(),
+        )
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].metadata["validation_status"], "unanchored")
+        self.assertEqual(cards[0].metadata["unanchored_evidence"], ["Missing.symbol"])
 
     def test_offline_fallback_stays_within_file_limit(self) -> None:
         source = Path("src/memory_system/extractor.py").resolve()

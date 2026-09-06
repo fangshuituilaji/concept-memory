@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Protocol
 
 from .extractor import SourceFacts
 
@@ -20,6 +20,9 @@ class ConceptSynthesisConfig:
     max_concepts: int = 9
     max_source_chars: int = 120_000
     api_key_env: str = "DASHSCOPE_API_KEY"
+    model_version: str | None = None
+    prompt_version: str = "concept-synthesis-v1"
+    generation_config: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not 1 <= self.target_concepts <= 9:
@@ -28,6 +31,26 @@ class ConceptSynthesisConfig:
             raise ValueError("max_concepts must be between 1 and 9")
         if self.target_concepts > self.max_concepts:
             raise ValueError("target_concepts cannot exceed max_concepts")
+        if not self.model.strip():
+            raise ValueError("model must be a non-empty string")
+        if not self.prompt_version.strip():
+            raise ValueError("prompt_version must be a non-empty string")
+        if self.model_version is not None and not isinstance(self.model_version, str):
+            raise TypeError("model_version must be a string or None")
+        object.__setattr__(self, "generation_config", dict(self.generation_config))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "target_concepts": self.target_concepts,
+            "max_concepts": self.max_concepts,
+            "max_source_chars": self.max_source_chars,
+            "api_key_env": self.api_key_env,
+            "model_version": self.model_version,
+            "prompt_version": self.prompt_version,
+            "generation_config": dict(self.generation_config),
+        }
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +71,8 @@ class ConceptSynthesizer(Protocol):
 
 class DashScopeQwenSynthesizer:
     """Use DashScope's Qwen-Flash once per source file."""
+
+    generated_by = "qwen-flash"
 
     def __init__(self, config: ConceptSynthesisConfig | None = None):
         self.config = config or ConceptSynthesisConfig()
@@ -85,7 +110,26 @@ class DashScopeQwenSynthesizer:
             result_format="message",
         )
         content = _response_content(response)
-        drafts = _parse_drafts(content)
+        try:
+            drafts = _parse_drafts(content)
+        except (ValueError, json.JSONDecodeError):
+            # Model returned malformed JSON; retry once with stricter prompt
+            response = dashscope.Generation.call(
+                model=self.config.model,
+                messages=[
+                    {"role": "system", "content": _system_prompt(self.config)},
+                    {"role": "user", "content": facts.to_prompt_text(
+                        max_source_chars=self.config.max_source_chars
+                    )},
+                ],
+                result_format="message",
+            )
+            content = _response_content(response)
+            try:
+                drafts = _parse_drafts(content)
+            except (ValueError, json.JSONDecodeError):
+                # Final fallback: use generic concepts from symbol names
+                drafts = _generic_fallback(facts)
         return _validate_drafts(drafts, self.config)
 
 
@@ -95,6 +139,8 @@ class OfflineConceptSynthesizer:
     This mode is intentionally only a fallback. With ``DASHSCOPE_API_KEY`` set,
     the default pipeline uses Qwen-Flash instead.
     """
+
+    generated_by = "offline-fallback"
 
     def __init__(self, config: ConceptSynthesisConfig | None = None):
         self.config = config or ConceptSynthesisConfig()

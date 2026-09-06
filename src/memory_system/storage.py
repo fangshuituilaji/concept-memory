@@ -20,6 +20,15 @@ class ConceptSearchResult:
     matched_fields: tuple[str, ...]
     explanation: str
 
+    @property
+    def file_path(self) -> str:
+        return self.card.location.file_path
+
+    @property
+    def score(self) -> float:
+        """Expose the backend rank for lower-level inspection."""
+
+        return self.rank
 
 class ConceptStore:
     """A small local store whose JSON card row is the source of truth."""
@@ -117,6 +126,26 @@ class ConceptStore:
             "SELECT card_json FROM concept_cards WHERE id = ?", (card_id,)
         ).fetchone()
         return ConceptCard.from_dict(json.loads(row["card_json"])) if row else None
+
+    def all_cards(self, *, limit: int | None = None) -> list[ConceptCard]:
+        """Return all stored cards in stable ID order for semantic selection.
+
+        The JSON card row remains the source of truth.  This API deliberately
+        does not expose FTS ranking: a semantic selector needs the complete,
+        deterministic card context rather than a lexical candidate shortlist.
+        """
+
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be at least 1 when provided")
+        sql = "SELECT card_json FROM concept_cards ORDER BY id"
+        params: tuple[int, ...] = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (limit,)
+        rows = self._require_connection().execute(sql, params).fetchall()
+        return [ConceptCard.from_dict(json.loads(row["card_json"])) for row in rows]
+
+    list_cards = all_cards
 
     def search(self, query: str, *, limit: int = 20) -> list[ConceptSearchResult]:
         if not query.strip():

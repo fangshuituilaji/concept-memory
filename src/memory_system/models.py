@@ -85,6 +85,7 @@ class ConceptCard:
                 location.qualified_name,
                 kind.value,
                 name,
+                digest,
             )
         )
         card_id = sha256(stable_key.encode("utf-8")).hexdigest()[:24]

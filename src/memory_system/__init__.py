@@ -13,6 +13,14 @@ from .enrichment import (
 from .models import ConceptCard, ConceptKind, SourceLocation
 from .pipeline import analyze_path, cards_to_json, write_cards_json
 from .storage import ConceptSearchResult, ConceptStore
+from .cache import CacheKey, ConceptCache
+from .security import (
+    JsonlAuditRecorder,
+    SecurityBoundaryError,
+    SecurityDecision,
+    SecurityPolicy,
+    SourceSendingPolicy,
+)
 
 __all__ = [
     "ConceptCard",
@@ -21,6 +29,13 @@ __all__ = [
     "ConceptSearchResult",
     "ConceptStore",
     "ConceptSynthesisConfig",
+    "CacheKey",
+    "ConceptCache",
+    "JsonlAuditRecorder",
+    "SecurityBoundaryError",
+    "SecurityDecision",
+    "SecurityPolicy",
+    "SourceSendingPolicy",
     "DashScopeQwenSynthesizer",
     "ModelConfig",
     "NoOpEnricher",
