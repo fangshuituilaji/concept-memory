@@ -49,7 +49,9 @@ class ConceptStore:
             return
         if self.database_path != ":memory:":
             Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.database_path)
+        # The MCP server shares one store across the tool-call and background
+        # scan threads; every access is serialized behind mcp_server._lock.
+        connection = sqlite3.connect(self.database_path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         try:

@@ -10,6 +10,10 @@ from typing import Any, Mapping, Protocol
 
 from .extractor import SourceFacts
 
+# Non-streaming requests otherwise inherit the SDK's 300 s default, so one
+# hung socket would stall an entire index build.
+REQUEST_TIMEOUT_SECONDS = 120
+
 
 @dataclass(frozen=True, slots=True)
 class ConceptSynthesisConfig:
@@ -108,6 +112,7 @@ class DashScopeQwenSynthesizer:
                 },
             ],
             result_format="message",
+            timeout=REQUEST_TIMEOUT_SECONDS,
         )
         content = _response_content(response)
         try:
@@ -123,6 +128,7 @@ class DashScopeQwenSynthesizer:
                     )},
                 ],
                 result_format="message",
+            timeout=REQUEST_TIMEOUT_SECONDS,
             )
             content = _response_content(response)
             try:

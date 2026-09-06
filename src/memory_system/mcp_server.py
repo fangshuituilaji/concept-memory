@@ -3,21 +3,25 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import threading
+import webbrowser
 from pathlib import Path
 from typing import Any
 
 from .cache import ConceptCache
 from .pipeline import analyze_path
 from .storage import ConceptStore
+from .web_server import get_init_state, set_init_state, start_web_server
 
 _lock = threading.Lock()
+_lifecycle_lock = threading.Lock()
 _store: ConceptStore | None = None
 _cache: ConceptCache | None = None
 _project_root: str = ""
 _database_path: str = ""
+_web_server: Any | None = None
+_web_url: str = ""
+_scan_thread: threading.Thread | None = None
 
 
 def _init(project_root: str) -> None:
@@ -83,24 +87,72 @@ def _card_to_summary(card: Any) -> dict[str, Any]:
     }
 
 
-def scan_codebase(path: str) -> dict[str, Any]:
-    """Scan a directory, generate concept cards, and store them locally."""
+def _scan_worker(root: str) -> None:
+    """Build concept cards off-thread, reporting per-file progress to the web UI."""
 
-    with _lock:
-        _init(path)
-        assert _store is not None and _cache is not None
+    try:
+
+        def _progress(done: int, total: int, current_file: str) -> None:
+            set_init_state("scanning", done=done, total=total, current_file=current_file)
+
         cards = analyze_path(
-            path,
+            root,
             cache=_cache,
             security_policy=None,
+            progress_callback=_progress,
         )
-        _store.upsert_cards(cards)
-        return {
-            "status": "ok",
-            "project_root": _project_root,
-            "concept_count": len(cards),
-            "database": _database_path,
-        }
+        with _lock:
+            assert _store is not None and _cache is not None
+            _store.upsert_cards(cards)
+        set_init_state("done", concept_count=len(cards), current_file="")
+    except Exception as exc:  # the progress page is the user-visible surface
+        set_init_state("error", message=str(exc))
+
+
+def scan_codebase(path: str, *, open_browser: bool = True) -> dict[str, Any]:
+    """Start a background index build and open the concept network progress page.
+
+    Returns immediately with the page URL; ``search_concepts`` reads whatever
+    is already committed while the scan continues.
+    """
+
+    global _scan_thread, _web_server, _web_url
+    root = str(Path(path).expanduser().resolve()) if path.strip() else str(Path.cwd().resolve())
+    with _lifecycle_lock:
+        if _scan_thread is not None and _scan_thread.is_alive():
+            return {
+                "status": "scanning",
+                "project_root": _project_root,
+                "progress": get_init_state(),
+                "url": _web_url,
+            }
+        _init(root)
+        assert _store is not None and _cache is not None
+        if _web_server is None:
+            _web_server = start_web_server(_database_path, scan_root=_project_root)
+            _web_url = f"http://127.0.0.1:{_web_server.server_address[1]}"
+        if open_browser:
+            try:
+                webbrowser.open(_web_url)
+            except Exception:
+                pass  # headless hosts still get the URL in the tool result
+        set_init_state("scanning", done=0, total=0, current_file="")
+        _scan_thread = threading.Thread(target=_scan_worker, args=(root,), daemon=True)
+        _scan_thread.start()
+    return {
+        "status": "scanning",
+        "project_root": root,
+        "url": _web_url,
+        "database": _database_path,
+    }
+
+
+def _active_scan() -> dict[str, Any] | None:
+    """Progress payload when a background scan is still running."""
+
+    if _scan_thread is not None and _scan_thread.is_alive():
+        return {"status": "scanning", "progress": get_init_state(), "url": _web_url}
+    return None
 
 
 def search_concepts(query: str, limit: int = 10) -> dict[str, Any]:
@@ -109,10 +161,14 @@ def search_concepts(query: str, limit: int = 10) -> dict[str, Any]:
     with _lock:
         store = _get_store()
         results = store.search(query, limit=max(1, min(limit, 50)))
-        return {
+        payload: dict[str, Any] = {
             "query": query,
             "results": [_card_to_summary(result.card) for result in results],
         }
+        active = _active_scan()
+        if active is not None:
+            payload["scan"] = active
+        return payload
 
 
 def get_card(card_id: str) -> dict[str, Any]:
@@ -136,7 +192,11 @@ def build_server() -> Any:
     _TOOLS = [
         mcp_types.Tool(
             name="scan_codebase",
-            description="Scan a local codebase directory and build concept card index.",
+            description=(
+                "Scan a local codebase directory and build the concept card index "
+                "in the background. Opens the concept network page (live init "
+                "progress) and returns its URL immediately."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {"path": {"type": "string"}},

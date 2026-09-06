@@ -32,36 +32,11 @@ def set_init_state(phase: str, **kwargs: Any) -> None:
 
 
 def run_scan_with_progress(path: str) -> dict[str, Any]:
-    """Run analyze_path with per-file progress callback for web UI."""
+    """Delegate page-triggered scans to the shared MCP scan implementation."""
 
-    from .cache import ConceptCache
-    from .pipeline import analyze_path
-    from pathlib import Path as _Path
+    from .mcp_server import scan_codebase
 
-    set_init_state("scanning", done=0, total=0, current_file="")
-    root = _Path(path).expanduser().resolve()
-    from .readers import discover_code_files
-    files = discover_code_files(root)
-    total = len(files)
-    set_init_state("scanning", done=0, total=total)
-
-    data_dir = root / ".concept-memory"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    cache = ConceptCache(str(data_dir / "concept-cache.json"))
-    db_path = str(data_dir / "concepts.sqlite")
-
-    cards = analyze_path(
-        path,
-        cache=cache,
-    )
-    set_init_state("done", done=total, total=total, current_file="")
-    store = ConceptStore(db_path)
-    store.open()
-    try:
-        store.upsert_cards(cards)
-    finally:
-        store.close()
-    return {"status": "ok", "project_root": str(root), "concept_count": len(cards), "database": db_path}
+    return scan_codebase(path, open_browser=False)
 
 _HTML = r"""<!DOCTYPE html>
 <html lang="zh">
@@ -105,14 +80,19 @@ resize();
 
 async function boot() {
   const state = await (await fetch('/api/init-state')).json();
-  if (state.phase === 'idle' || state.phase === 'done') {
-    await fetch('/api/scan?path=' + encodeURIComponent('src'));
+  if (state.phase === 'idle') {
+    await fetch('/api/scan?path=');
   }
   while (true) {
     const s = await (await fetch('/api/init-state')).json();
+    if (s.phase === 'error') {
+      document.getElementById('count').textContent = '初始化失败：' + (s.message || '未知错误');
+      return;
+    }
     if (s.phase === 'scanning') {
       document.getElementById('count').textContent =
-        '初始化中... ' + (s.done||0) + ' / ' + (s.total||'?') + ' 个文件';
+        '初始化中... ' + (s.done||0) + ' / ' + (s.total||'?') + ' 个文件'
+        + (s.current_file ? '（' + s.current_file + '）' : '');
       await new Promise(r=>setTimeout(r, 500));
       continue;
     }
@@ -255,7 +235,12 @@ class _Handler(SimpleHTTPRequestHandler):
             self.wfile.write(payload)
         elif parsed.path == "/api/scan":
             query = parse_qs(parsed.query)
-            target = query.get("path", [""])[0] or "."
+            target = query.get("path", [""])[0].strip()
+            scan_root = getattr(self.server, "scan_root", "") or os.getcwd()
+            if not target:
+                target = scan_root
+            elif not os.path.isabs(target):
+                target = os.path.join(scan_root, target)
             thread = threading.Thread(
                 target=run_scan_with_progress, args=(target,), daemon=True
             )
@@ -290,11 +275,24 @@ class _Handler(SimpleHTTPRequestHandler):
         pass
 
 
-def start_web_server(database_path: str, port: int = 8080) -> HTTPServer:
-    """Start the web visualization server (non-blocking)."""
+def start_web_server(
+    database_path: str,
+    port: int = 8080,
+    scan_root: str = "",
+) -> HTTPServer:
+    """Start the web visualization server (non-blocking), trying nearby ports."""
 
-    server = HTTPServer(("127.0.0.1", port), _Handler)
+    server: HTTPServer | None = None
+    for candidate in range(port, port + 10):
+        try:
+            server = HTTPServer(("127.0.0.1", candidate), _Handler)
+            break
+        except OSError:
+            continue
+    if server is None:
+        raise OSError(f"no free port in {port}-{port + 9} for the concept web UI")
     server.database_path = database_path  # type: ignore[attr-defined]
+    server.scan_root = scan_root  # type: ignore[attr-defined]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server

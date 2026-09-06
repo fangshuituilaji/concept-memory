@@ -9,7 +9,7 @@
 
 ## 当前实现与产品差距
 
-已具备：`memory-mcp`（`scan_codebase` / `search_concepts` / `get_card` 三个工具）、概念生成与证据绑定（含文件、符号、行号）、SQLite FTS 存储、`memory-web` 概念网络页面（初始化扫描、进度显示、灰节点、点击看卡片）。
+已具备：`memory-mcp`（`scan_codebase` / `search_concepts` / `get_card` 三个工具）、概念生成与证据绑定（含文件、符号、行号）、SQLite FTS 存储、`memory-web` 概念网络页面（初始化扫描、进度显示、灰节点、点击看卡片）。`scan_codebase` 立即返回并在后台扫描：自动启动 `memory-web` 并打开进度页（逐文件实时进度），文件级 Qwen 调用走线程池并行（默认 6 并发，120 秒超时，失败自动重试 3 次）。
 
 距产品完成还差：
 
