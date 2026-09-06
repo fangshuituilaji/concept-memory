@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Concept Memory 架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "output": "architecture-diagram.html",
+    "views": [
+      { "id": "index-path", "label": "索引链路", "focus": ["src-files", "extractor", "encoder", "evidence", "store"], "note": "扫描代码目录，生成概念卡片并绑定源码证据，写入本地索引。" },
+      { "id": "query-path", "label": "检索链路", "focus": ["agent", "mcp", "store", "src-files"], "note": "Agent 通过 MCP 检索概念卡片，再按行号用 read 读取源码。" }
+    ]
+  },
+  "components": [
+    { "id": "src-files", "type": "external", "label": "代码工作目录", "sublabel": "Python 源码为主", "pos": [40, 280], "size": [140, 64] },
+    { "id": "extractor", "type": "backend", "label": "源码事实提取", "sublabel": "AST 符号/签名/行号", "pos": [265, 280], "size": [140, 64] },
+    { "id": "encoder", "type": "backend", "label": "概念编码", "sublabel": "整文件阅读生成卡片", "pos": [490, 280], "size": [140, 64] },
+    { "id": "model-api", "type": "cloud", "label": "在线模型 API", "sublabel": "qwen-flash", "tag": "DASHSCOPE_API_KEY", "pos": [490, 100], "size": [140, 64] },
+    { "id": "evidence", "type": "backend", "label": "证据绑定", "sublabel": "本地验证·缓存增量", "pos": [715, 280], "size": [140, 64] },
+    { "id": "store", "type": "database", "label": "SQLite FTS5", "sublabel": "JSON 交换·全文索引", "pos": [715, 520], "size": [140, 64] },
+    { "id": "security", "type": "security", "label": "敏感文件审计", "sublabel": "白名单放行", "pos": [265, 520], "size": [140, 64] },
+    { "id": "web", "type": "frontend", "label": "memory-web", "sublabel": "概念网络页面", "pos": [500, 520], "size": [140, 64] },
+    { "id": "mcp", "type": "backend", "label": "memory-mcp", "sublabel": "MCP 服务", "tag": "scan/search/get_card", "pos": [940, 520], "size": [140, 64] },
+    { "id": "agent", "type": "external", "label": "Coding Agent", "sublabel": "MCP 客户端", "pos": [1165, 520], "size": [140, 64] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "本地运行 · concept-memory", "wraps": ["extractor", "encoder", "evidence", "store", "security", "web", "mcp"], "pad": 24 }
+  ],
+  "connections": [
+    { "id": "src-to-extractor", "from": "src-files", "to": "extractor", "label": "读取源码" },
+    { "id": "extractor-to-encoder", "from": "extractor", "to": "encoder", "label": "整文件阅读" },
+    { "id": "encoder-to-model", "from": "encoder", "to": "model-api", "label": "调用生成概念", "fromSide": "top", "toSide": "bottom" },
+    { "id": "security-to-encoder", "from": "security", "to": "encoder", "label": "白名单审计", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "encoder-to-evidence", "from": "encoder", "to": "evidence", "label": "概念草稿绑定" },
+    { "id": "evidence-to-store", "from": "evidence", "to": "store", "label": "写入卡片", "fromSide": "bottom", "toSide": "top", "labelAt": [785, 432] },
+    { "id": "store-to-mcp", "from": "store", "to": "mcp", "label": "FTS 检索" },
+    { "id": "mcp-to-agent", "from": "mcp", "to": "agent", "label": "MCP 调用" },
+    { "id": "store-to-web", "from": "store", "to": "web", "label": "查询概念", "fromSide": "left", "toSide": "right" },
+    { "id": "agent-to-src", "from": "agent", "to": "src-files", "label": "read 按行读码", "variant": "dashed", "fromSide": "bottom", "toSide": "bottom", "via": [[1235, 680], [110, 680]] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "产品链路", "items": ["扫描 → 检索 → 返回概念卡片 → agent 按行读码", "卡片携带文件、符号、行号证据"] },
+    { "dot": "emerald", "title": "存储与安全", "items": ["SQLite FTS5 全文索引，JSON 交换", "API key 只从环境变量读取", "敏感文件须显式加入白名单"] },
+    { "dot": "amber", "title": "当前差距", "items": ["检索输出按任务组织卡片序列", "页面连接状态与命中可视化", "真实 coding agent 端到端验证"] }
+  ]
+}
