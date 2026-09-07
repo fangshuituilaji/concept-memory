@@ -218,6 +218,30 @@ class ConceptStore:
                     (card.id, card.name, card.definition, " ".join((card.background, *card.background_concepts))),
                 )
 
+    def prune_not_in(self, keep_ids: set[str]) -> int:
+        """Delete cards the latest scan did not produce (gone or renamed files).
+
+        The store would otherwise accumulate orphaned cards forever and
+        inflate the concept count.  Usage edges touching pruned cards are
+        removed too; returns the number of deleted cards.
+        """
+
+        connection = self._require_connection()
+        with connection:
+            rows = connection.execute("SELECT id FROM concept_cards").fetchall()
+            stale = [row["id"] for row in rows if row["id"] not in keep_ids]
+            for card_id in stale:
+                connection.execute("DELETE FROM concept_cards WHERE id = ?", (card_id,))
+                connection.execute("DELETE FROM concept_search WHERE id = ?", (card_id,))
+                try:
+                    connection.execute(
+                        "DELETE FROM concept_usage_edges WHERE source_id = ? OR target_id = ?",
+                        (card_id, card_id),
+                    )
+                except sqlite3.OperationalError:
+                    pass  # usage table not created yet
+        return len(stale)
+
     def _require_connection(self) -> sqlite3.Connection:
         if self._connection is None:
             self.open()

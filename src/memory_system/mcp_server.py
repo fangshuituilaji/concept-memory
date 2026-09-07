@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import webbrowser
 from pathlib import Path
 from typing import Any
 
-from .activation import SpreadingActivationSearch, store_relations
+from .activation import SpreadingActivationSearch, record_usage
 from .cache import ConceptCache
 from .pipeline import analyze_path
-from .relations import cooccurrence_relations, discover_relations_from_cards
 from .storage import ConceptStore
 from .web_server import get_init_state, set_init_state, start_web_server
 
@@ -107,32 +105,12 @@ def _scan_worker(root: str) -> None:
         with _lock:
             assert _store is not None and _cache is not None
             _store.upsert_cards(cards)
-        _discover_and_store_relations(cards)
-        set_init_state("done", concept_count=len(cards), current_file="")
+            pruned = _store.prune_not_in({card.id for card in cards})
+        set_init_state(
+            "done", concept_count=len(cards), pruned=pruned, current_file=""
+        )
     except Exception as exc:  # the progress page is the user-visible surface
         set_init_state("error", message=str(exc))
-
-
-def _discover_and_store_relations(cards: list) -> None:
-    """Build concept relation edges after a scan; failures keep cards usable.
-
-    Uses one online model call when DASHSCOPE_API_KEY is available, and a
-    deterministic background-concept co-occurrence fallback otherwise.
-    """
-
-    assert _database_path
-    set_init_state("relations", current_file="")
-    try:
-        cards_payload = [card.to_dict() for card in cards]
-        if os.getenv("DASHSCOPE_API_KEY"):
-            relations = discover_relations_from_cards(cards_payload)
-        else:
-            relations = cooccurrence_relations(cards_payload)
-        if relations:
-            with _lock:
-                store_relations(_database_path, relations)
-    except Exception:
-        pass  # relations are additive; an empty graph degrades search gracefully
 
 
 def scan_codebase(path: str, *, open_browser: bool = True) -> dict[str, Any]:
@@ -250,14 +228,49 @@ def _related_concepts(query: str, results: list, limit: int) -> list[dict[str, A
     return related
 
 
-def get_card(card_id: str) -> dict[str, Any]:
-    """Return the full concept card with all evidence by ID."""
+def get_card(card_ids: str | list[str]) -> dict[str, Any]:
+    """Return full concept cards by ID; multi-card fetches record real usage.
+
+    ``get_card`` is the model's way of reading code through memory: the
+    returned cards (concept plus line indexes) are what it consumes.  One
+    call may fetch several cards; each fetched pair then gets a co-usage
+    edge incremented, so the concept web reflects what real sessions used
+    together and future searches spread activation over those links.
+    """
 
     with _lock:
-        card = _get_store().get(card_id)
-        if card is None:
-            return {"error": f"card {card_id!r} not found"}
-        return card.to_dict()
+        store = _get_store()
+        if isinstance(card_ids, str):
+            text = card_ids.strip()
+            if text.startswith("["):
+                # some clients stringify array arguments; accept JSON too
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed = None
+                card_ids = (
+                    [str(item) for item in parsed]
+                    if isinstance(parsed, list) and parsed
+                    else [text]
+                )
+            else:
+                card_ids = [card_ids]
+        cards: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for card_id in card_ids:
+            card = store.get(card_id)
+            if card is None:
+                missing.append(card_id)
+            else:
+                cards.append(card.to_dict())
+        if not cards:
+            return {"error": f"cards {missing!r} not found"}
+        if len(cards) >= 2 and _database_path:
+            record_usage(_database_path, [card["id"] for card in cards])
+        payload: dict[str, Any] = {"cards": cards}
+        if missing:
+            payload["not_found"] = missing
+        return payload
 
 
 def build_server() -> Any:
@@ -287,8 +300,8 @@ def build_server() -> Any:
             description=(
                 "Search concept cards by natural language query. Returns the "
                 "directly matched cards first, then related concepts reached "
-                "over the concept relation graph (with hop count and the "
-                "propagation path), forming an ordered reading sequence."
+                "over the real-usage concept graph (edges recorded from past "
+                "get_card calls), forming an ordered reading sequence."
             ),
             inputSchema={
                 "type": "object",
@@ -301,11 +314,23 @@ def build_server() -> Any:
         ),
         mcp_types.Tool(
             name="get_card",
-            description="Get the full concept card and source evidence by card ID.",
+            description=(
+                "Read one or more concept cards by ID. The returned cards "
+                "(concept, evidence, line indexes) are what you consume "
+                "instead of reading whole files. Fetching several cards in "
+                "one call also records that they were used together, which "
+                "improves future searches."
+            ),
             inputSchema={
                 "type": "object",
-                "properties": {"card_id": {"type": "string"}},
-                "required": ["card_id"],
+                "properties": {
+                    "card_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "One or more card IDs to fetch together.",
+                    },
+                },
+                "required": ["card_ids"],
             },
         ),
     ]
@@ -328,7 +353,10 @@ def build_server() -> Any:
                 arguments.get("limit", 10),
             )
         elif name == "get_card":
-            result = await asyncio.to_thread(get_card, arguments.get("card_id", ""))
+            card_ids = arguments.get("card_ids")
+            if card_ids is None:
+                card_ids = arguments.get("card_id", "")
+            result = await asyncio.to_thread(get_card, card_ids)
         else:
             raise ValueError(f"unknown tool: {name}")
         return mcp_types.CallToolResult(

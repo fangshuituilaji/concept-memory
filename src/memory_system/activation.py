@@ -1,14 +1,18 @@
-"""Spreading activation retrieval over the concept graph."""
+"""Spreading activation retrieval over the real-usage concept graph.
+
+Edges are never invented by a model.  The only edge source is recorded
+usage: every ``get_card`` call that fetches several cards at once adds one
+co-usage link between each fetched pair, and the link's weight is how many
+times it has happened.  Retrieval spreads activation over those links so
+future searches surface what past sessions actually used together.
+"""
 
 from __future__ import annotations
 
 import json
-import math
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-
-from .relations import ConceptRelation
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +33,7 @@ class SpreadingActivationSearch:
         database_path: str,
         *,
         decay: float = 0.5,
-        threshold: float = 0.1,
+        threshold: float = 0.05,
         max_hops: int = 2,
         max_results: int = 20,
     ):
@@ -50,16 +54,18 @@ class SpreadingActivationSearch:
         ).fetchall()
         for row in rows:
             self._cards[row["id"]] = json.loads(row["card_json"])
-        # Load edges; a database that has never run relation discovery
-        # simply yields an empty graph instead of failing the search.
+        # Load real-usage edges; a database with no recorded usage simply
+        # yields an empty graph instead of failing the search.
         try:
             edge_rows = self.db.execute(
-                "SELECT source_id, target_id, confidence FROM concept_relations"
+                "SELECT source_id, target_id, count FROM concept_usage_edges"
             ).fetchall()
         except sqlite3.OperationalError:
             return
         for row in edge_rows:
-            src, tgt, conf = row["source_id"], row["target_id"], row["confidence"]
+            src, tgt, count = row["source_id"], row["target_id"], row["count"]
+            # Co-usage frequency saturates towards 1 as the pair is reused.
+            conf = count / (count + 1)
             # Bidirectional traversal (undirected for retrieval)
             self._edges.setdefault(src, []).append((tgt, conf))
             self._edges.setdefault(tgt, []).append((src, conf))
@@ -146,29 +152,37 @@ class SpreadingActivationSearch:
         self.db.close()
 
 
-def store_relations(database_path: str, relations: list[ConceptRelation]) -> None:
-    """Persist relations into SQLite."""
+def record_usage(database_path: str, card_ids: list[str]) -> None:
+    """Persist one real-usage event: the co-use of several cards together.
+
+    Called on every multi-card ``get_card`` fetch.  Each unordered pair in
+    the fetch gets its counter incremented by one; repeated co-use makes
+    the edge heavier.  Unknown or duplicate IDs are ignored.
+    """
+
+    unique_ids = list(dict.fromkeys(card_id for card_id in card_ids if card_id))
+    if len(unique_ids) < 2:
+        return
     conn = sqlite3.connect(database_path)
     conn.row_factory = sqlite3.Row
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS concept_relations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+        CREATE TABLE IF NOT EXISTS concept_usage_edges (
             source_id TEXT NOT NULL,
             target_id TEXT NOT NULL,
-            relation_type TEXT NOT NULL,
-            confidence REAL NOT NULL DEFAULT 0.5,
-            explanation TEXT NOT NULL DEFAULT '',
-            UNIQUE(source_id, target_id)
+            count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_id, target_id)
         )
     """)
     with conn:
-        for r in relations:
-            conn.execute("""
-                INSERT INTO concept_relations(source_id, target_id, relation_type, confidence, explanation)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(source_id, target_id) DO UPDATE SET
-                    relation_type = excluded.relation_type,
-                    confidence = excluded.confidence,
-                    explanation = excluded.explanation
-            """, (r.source_id, r.target_id, r.relation_type, r.confidence, r.explanation))
+        for i, source in enumerate(unique_ids):
+            for target in unique_ids[i + 1:]:
+                first, second = sorted((source, target))
+                conn.execute("""
+                    INSERT INTO concept_usage_edges(source_id, target_id, count)
+                    VALUES (?, ?, 1)
+                    ON CONFLICT(source_id, target_id) DO UPDATE SET
+                        count = count + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (first, second))
     conn.close()

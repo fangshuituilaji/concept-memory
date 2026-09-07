@@ -64,11 +64,8 @@ canvas { display:block; }
   <div id="title">Concept Memory</div>
   <div id="count"></div>
   <div id="legend">
-    <span><i style="background:#f87171"></i>上游</span>
-    <span><i style="background:#4ade80"></i>使能</span>
-    <span><i style="background:#fbbf24"></i>约束</span>
-    <span><i style="background:#a78bfa"></i>组成</span>
-    <span><i style="background:#60a5fa"></i>相关</span>
+    <span><i style="background:rgba(148,163,184,0.4)"></i>同文件概念</span>
+    <span><i style="background:#cbd5e1"></i>真实共同使用（越粗次数越多）</span>
   </div>
 </div>
 <canvas id="cv"></canvas>
@@ -79,7 +76,6 @@ const ctx = cv.getContext('2d');
 const tooltip = document.getElementById('tooltip');
 let nodes = [], edges = [], hovered = null;
 let W, H;
-const REL_COLORS = { upstream_of:'#f87171', enables:'#4ade80', constrains:'#fbbf24', part_of:'#a78bfa', related_to:'#60a5fa' };
 
 function resize() {
   W = cv.width = window.innerWidth;
@@ -106,11 +102,6 @@ async function boot() {
       await new Promise(r=>setTimeout(r, 500));
       continue;
     }
-    if (s.phase === 'relations') {
-      document.getElementById('count').textContent = '发现概念关系...';
-      await new Promise(r=>setTimeout(r, 500));
-      continue;
-    }
     break;
   }
   const data = await (await fetch('/api/concepts')).json();
@@ -123,23 +114,22 @@ async function boot() {
   });
   const idToNode = {};
   nodes.forEach((n,i)=>{ idToNode[n.card.id] = i; });
-  const relData = await (await fetch('/api/relations')).json();
-  (relData.relations||[]).forEach(r=>{
-    const i = idToNode[r.source_id], j = idToNode[r.target_id];
-    if (i===undefined || j===undefined || i===j) return;
-    edges.push({a:i, b:j, type:r.relation_type, confidence:r.confidence||0.5});
+  // same-file concepts are always connected (initial state)
+  const byFile = {};
+  cards.forEach((c,i)=>{
+    (byFile[c.location.file_path] = byFile[c.location.file_path] || []).push(i);
   });
-  if (!edges.length) {
-    // no relation graph yet: fall back to file-grouping chains
-    const byFile = {};
-    cards.forEach((c,i)=>{
-      (byFile[c.location.file_path] = byFile[c.location.file_path] || []).push(i);
-    });
-    Object.values(byFile).forEach(group=>{
-      for (let i=0;i<group.length-1;i++)
-        edges.push({a:group[i], b:group[i+1], type:null, confidence:0.5});
-    });
-  }
+  Object.values(byFile).forEach(group=>{
+    for (let i=0;i<group.length-1;i++)
+      edges.push({a:group[i], b:group[i+1], usage:0});
+  });
+  // real-usage edges: only pairs actually fetched together by the agent
+  const usage = await (await fetch('/api/usage-edges')).json();
+  (usage.edges||[]).forEach(e=>{
+    const i = idToNode[e.source_id], j = idToNode[e.target_id];
+    if (i===undefined || j===undefined || i===j) return;
+    edges.push({a:i, b:j, usage:e.count||1});
+  });
   animate();
 }
 boot();
@@ -191,28 +181,19 @@ function draw() {
   edges.forEach(e=>{
     const a=nodes[e.a], b=nodes[e.b];
     if (!a || !b) return;
-    const color = e.type ? (REL_COLORS[e.type] || '#94a3b8') : 'rgba(148,163,184,0.15)';
-    ctx.strokeStyle = color;
-    ctx.globalAlpha = e.type ? 0.55 : 1;
-    ctx.lineWidth = e.type ? 1 + 2*(e.confidence||0.5) : 1;
+    // same-file placeholders are faint; usage edges are lighter gray and
+    // thicken with co-use count, capped so old links stay readable
+    if (e.usage > 0) {
+      ctx.strokeStyle = '#cbd5e1';
+      ctx.lineWidth = 1 + Math.min(e.usage, 8) * 0.9;
+    } else {
+      ctx.strokeStyle = 'rgba(148,163,184,0.15)';
+      ctx.lineWidth = 1;
+    }
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
-    if (e.type && e.type !== 'related_to') {
-      // arrowhead pointing at the target node
-      const dx=b.x-a.x, dy=b.y-a.y, d=Math.sqrt(dx*dx+dy*dy)||1;
-      const ux=dx/d, uy=dy/d;
-      const tipX=b.x-ux*(b.r+2), tipY=b.y-uy*(b.r+2), s=5;
-      ctx.beginPath();
-      ctx.moveTo(tipX, tipY);
-      ctx.lineTo(tipX-ux*s-uy*s*0.5, tipY-uy*s+ux*s*0.5);
-      ctx.lineTo(tipX-ux*s+uy*s*0.5, tipY-uy*s-ux*s*0.5);
-      ctx.closePath();
-      ctx.fillStyle = color;
-      ctx.fill();
-    }
-    ctx.globalAlpha = 1;
   });
   nodes.forEach(n=>{
     ctx.beginPath();
@@ -252,15 +233,15 @@ cv.addEventListener('click', ()=>{
     const names = {};
     nodes.forEach((n,i)=>{ names[i] = n.card.name; });
     const linked = edges
-      .filter(e=>(e.a===idx||e.b===idx) && e.type)
-      .map(e=>'· ' + names[e.a===idx ? e.b : e.a] + '（' + (e.type||'') + '）');
+      .filter(e=>(e.a===idx||e.b===idx) && e.usage>0)
+      .map(e=>'· ' + names[e.a===idx ? e.b : e.a] + '（共同使用 ' + e.usage + ' 次）');
     alert(
       '概念: ' + c.name + '\n\n' +
       '定义: ' + c.definition + '\n\n' +
       '文件: ' + c.location.file_path + '\n' +
       '行号: ' + c.location.start_line + '-' + c.location.end_line + '\n' +
       'card_id: ' + c.id +
-      (linked.length ? '\n\n关联概念:\n' + linked.join('\n') : '')
+      (linked.length ? '\n\n真实共同使用:\n' + linked.join('\n') : '')
     );
   }
 });
@@ -279,8 +260,8 @@ class _Handler(SimpleHTTPRequestHandler):
             self.wfile.write(_HTML.encode("utf-8"))
         elif parsed.path == "/api/concepts":
             self._serve_concepts()
-        elif parsed.path == "/api/relations":
-            self._serve_relations()
+        elif parsed.path == "/api/usage-edges":
+            self._serve_usage_edges()
         elif parsed.path == "/api/init-state":
             payload = json.dumps(get_init_state(), ensure_ascii=False).encode("utf-8")
             self.send_response(200)
@@ -326,9 +307,11 @@ class _Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _serve_relations(self) -> None:
+    def _serve_usage_edges(self) -> None:
+        """Serve recorded real-usage edges (co-use counts per card pair)."""
+
         db = self.server.database_path  # type: ignore[attr-defined]
-        relations: list[dict[str, Any]] = []
+        edges: list[dict[str, Any]] = []
         if Path(db).exists():
             try:
                 import sqlite3
@@ -337,17 +320,16 @@ class _Handler(SimpleHTTPRequestHandler):
                 connection.row_factory = sqlite3.Row
                 try:
                     rows = connection.execute(
-                        "SELECT source_id, target_id, relation_type, confidence,"
-                        " explanation FROM concept_relations"
+                        "SELECT source_id, target_id, count FROM concept_usage_edges"
                     ).fetchall()
                 except sqlite3.OperationalError:
                     rows = []
                 finally:
                     connection.close()
-                relations = [dict(row) for row in rows]
+                edges = [dict(row) for row in rows]
             except Exception:
-                relations = []
-        payload = json.dumps({"relations": relations}, ensure_ascii=False).encode("utf-8")
+                edges = []
+        payload = json.dumps({"edges": edges}, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
