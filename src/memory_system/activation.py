@@ -50,10 +50,14 @@ class SpreadingActivationSearch:
         ).fetchall()
         for row in rows:
             self._cards[row["id"]] = json.loads(row["card_json"])
-        # Load edges
-        edge_rows = self.db.execute(
-            "SELECT source_id, target_id, confidence FROM concept_relations"
-        ).fetchall()
+        # Load edges; a database that has never run relation discovery
+        # simply yields an empty graph instead of failing the search.
+        try:
+            edge_rows = self.db.execute(
+                "SELECT source_id, target_id, confidence FROM concept_relations"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return
         for row in edge_rows:
             src, tgt, conf = row["source_id"], row["target_id"], row["confidence"]
             # Bidirectional traversal (undirected for retrieval)
@@ -61,23 +65,25 @@ class SpreadingActivationSearch:
             self._edges.setdefault(tgt, []).append((src, conf))
 
     def search(self, query: str) -> list[ActivationResult]:
-        # Step 1: seed matching with field-weighted activation scores
         like = f"%{query.strip()}%"
-        rows = self.db.execute(
-            """
-            SELECT id, name,
-                   json_extract(card_json, '$.definition') AS definition,
-                   json_extract(card_json, '$.background') AS background,
-                   json_extract(card_json, '$.background_concepts') AS bg_concepts
-            FROM concept_cards
-            WHERE name LIKE ? OR definition LIKE ?
-               OR json_extract(card_json, '$.background') LIKE ?
-               OR json_extract(card_json, '$.background_concepts') LIKE ?
-            """,
-            (like, like, like, like),
-        ).fetchall()
         term = query.strip()
         seeds: dict[str, float] = {}
+        try:
+            rows = self.db.execute(
+                """
+                SELECT id, name,
+                       json_extract(card_json, '$.definition') AS definition,
+                       json_extract(card_json, '$.background') AS background,
+                       json_extract(card_json, '$.background_concepts') AS bg_concepts
+                FROM concept_cards
+                WHERE name LIKE ? OR definition LIKE ?
+                   OR json_extract(card_json, '$.background') LIKE ?
+                   OR json_extract(card_json, '$.background_concepts') LIKE ?
+                """,
+                (like, like, like, like),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
         for row in rows:
             if term in (row["name"] or ""):
                 score = 1.0       # name match: strongest signal
@@ -88,6 +94,11 @@ class SpreadingActivationSearch:
             else:
                 score = 0.3       # background_concepts only
             seeds[row["id"]] = max(seeds.get(row["id"], 0.0), score)
+        return self.search_from_seeds(seeds)
+
+    def search_from_seeds(self, seeds: dict[str, float]) -> list[ActivationResult]:
+        """Spread activation from caller-provided seeds (id -> initial score)."""
+
         if not seeds:
             return []
 

@@ -50,6 +50,8 @@ body { font-family: system-ui, sans-serif; background:#1a1a2e; color:#e0e0e0; ov
 #status-dot { width:10px; height:10px; border-radius:50%; background:#4ade80; }
 #title { font-size:14px; font-weight:600; }
 #count { font-size:12px; color:#94a3b8; }
+#legend { display:flex; gap:10px; margin-left:auto; font-size:10px; color:#94a3b8; align-items:center; }
+#legend i { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:3px; vertical-align:-1px; }
 canvas { display:block; }
 #tooltip { position:fixed; pointer-events:none; background:#0f3460; border:1px solid #16537e; border-radius:6px; padding:8px 10px; font-size:12px; max-width:280px; display:none; z-index:20; }
 #tooltip .name { font-weight:600; margin-bottom:4px; }
@@ -61,6 +63,13 @@ canvas { display:block; }
   <div id="status-dot"></div>
   <div id="title">Concept Memory</div>
   <div id="count"></div>
+  <div id="legend">
+    <span><i style="background:#f87171"></i>上游</span>
+    <span><i style="background:#4ade80"></i>使能</span>
+    <span><i style="background:#fbbf24"></i>约束</span>
+    <span><i style="background:#a78bfa"></i>组成</span>
+    <span><i style="background:#60a5fa"></i>相关</span>
+  </div>
 </div>
 <canvas id="cv"></canvas>
 <div id="tooltip"><div class="name"></div><div class="def"></div></div>
@@ -70,6 +79,7 @@ const ctx = cv.getContext('2d');
 const tooltip = document.getElementById('tooltip');
 let nodes = [], edges = [], hovered = null;
 let W, H;
+const REL_COLORS = { upstream_of:'#f87171', enables:'#4ade80', constrains:'#fbbf24', part_of:'#a78bfa', related_to:'#60a5fa' };
 
 function resize() {
   W = cv.width = window.innerWidth;
@@ -96,23 +106,40 @@ async function boot() {
       await new Promise(r=>setTimeout(r, 500));
       continue;
     }
+    if (s.phase === 'relations') {
+      document.getElementById('count').textContent = '发现概念关系...';
+      await new Promise(r=>setTimeout(r, 500));
+      continue;
+    }
     break;
   }
   const data = await (await fetch('/api/concepts')).json();
   const cards = data.cards;
   document.getElementById('count').textContent = cards.length + ' concepts';
-  const byFile = {};
   cards.forEach((c,i)=>{
-    const f = c.location.file_path;
-    if (!byFile[f]) byFile[f] = [];
-    byFile[f].push(i);
     const cx = W/2 + (Math.random()-0.5)*W*0.6;
     const cy = H/2 + (Math.random()-0.5)*H*0.6;
     nodes.push({x:cx, y:cy, vx:0, vy:0, r:8, card:c, fixed:false});
   });
-  Object.values(byFile).forEach(group=>{
-    for (let i=0;i<group.length-1;i++) edges.push([group[i],group[i+1]]);
+  const idToNode = {};
+  nodes.forEach((n,i)=>{ idToNode[n.card.id] = i; });
+  const relData = await (await fetch('/api/relations')).json();
+  (relData.relations||[]).forEach(r=>{
+    const i = idToNode[r.source_id], j = idToNode[r.target_id];
+    if (i===undefined || j===undefined || i===j) return;
+    edges.push({a:i, b:j, type:r.relation_type, confidence:r.confidence||0.5});
   });
+  if (!edges.length) {
+    // no relation graph yet: fall back to file-grouping chains
+    const byFile = {};
+    cards.forEach((c,i)=>{
+      (byFile[c.location.file_path] = byFile[c.location.file_path] || []).push(i);
+    });
+    Object.values(byFile).forEach(group=>{
+      for (let i=0;i<group.length-1;i++)
+        edges.push({a:group[i], b:group[i+1], type:null, confidence:0.5});
+    });
+  }
   animate();
 }
 boot();
@@ -138,8 +165,9 @@ function step() {
       b.vx+=dx*f; b.vy+=dy*f;
     }
   // edge attraction
-  edges.forEach(([i,j])=>{
-    const a=nodes[i], b=nodes[j];
+  edges.forEach(e=>{
+    const a=nodes[e.a], b=nodes[e.b];
+    if (!a || !b) return;
     const dx=b.x-a.x, dy=b.y-a.y;
     const d=Math.sqrt(dx*dx+dy*dy)||1;
     const f=0.02*(d-80);
@@ -160,13 +188,31 @@ function step() {
 
 function draw() {
   ctx.clearRect(0,0,W,H);
-  ctx.strokeStyle = 'rgba(148,163,184,0.15)';
-  ctx.lineWidth = 1;
-  edges.forEach(([i,j])=>{
+  edges.forEach(e=>{
+    const a=nodes[e.a], b=nodes[e.b];
+    if (!a || !b) return;
+    const color = e.type ? (REL_COLORS[e.type] || '#94a3b8') : 'rgba(148,163,184,0.15)';
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = e.type ? 0.55 : 1;
+    ctx.lineWidth = e.type ? 1 + 2*(e.confidence||0.5) : 1;
     ctx.beginPath();
-    ctx.moveTo(nodes[i].x, nodes[i].y);
-    ctx.lineTo(nodes[j].x, nodes[j].y);
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
     ctx.stroke();
+    if (e.type && e.type !== 'related_to') {
+      // arrowhead pointing at the target node
+      const dx=b.x-a.x, dy=b.y-a.y, d=Math.sqrt(dx*dx+dy*dy)||1;
+      const ux=dx/d, uy=dy/d;
+      const tipX=b.x-ux*(b.r+2), tipY=b.y-uy*(b.r+2), s=5;
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(tipX-ux*s-uy*s*0.5, tipY-uy*s+ux*s*0.5);
+      ctx.lineTo(tipX-ux*s+uy*s*0.5, tipY-uy*s-ux*s*0.5);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
   });
   nodes.forEach(n=>{
     ctx.beginPath();
@@ -202,12 +248,19 @@ cv.addEventListener('mousemove', e=>{
 cv.addEventListener('click', ()=>{
   if (hovered) {
     const c = hovered.card;
+    const idx = nodes.indexOf(hovered);
+    const names = {};
+    nodes.forEach((n,i)=>{ names[i] = n.card.name; });
+    const linked = edges
+      .filter(e=>(e.a===idx||e.b===idx) && e.type)
+      .map(e=>'· ' + names[e.a===idx ? e.b : e.a] + '（' + (e.type||'') + '）');
     alert(
       '概念: ' + c.name + '\n\n' +
       '定义: ' + c.definition + '\n\n' +
       '文件: ' + c.location.file_path + '\n' +
       '行号: ' + c.location.start_line + '-' + c.location.end_line + '\n' +
-      'card_id: ' + c.id
+      'card_id: ' + c.id +
+      (linked.length ? '\n\n关联概念:\n' + linked.join('\n') : '')
     );
   }
 });
@@ -226,6 +279,8 @@ class _Handler(SimpleHTTPRequestHandler):
             self.wfile.write(_HTML.encode("utf-8"))
         elif parsed.path == "/api/concepts":
             self._serve_concepts()
+        elif parsed.path == "/api/relations":
+            self._serve_relations()
         elif parsed.path == "/api/init-state":
             payload = json.dumps(get_init_state(), ensure_ascii=False).encode("utf-8")
             self.send_response(200)
@@ -265,6 +320,34 @@ class _Handler(SimpleHTTPRequestHandler):
             finally:
                 store.close()
         payload = json.dumps({"cards": cards}, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _serve_relations(self) -> None:
+        db = self.server.database_path  # type: ignore[attr-defined]
+        relations: list[dict[str, Any]] = []
+        if Path(db).exists():
+            try:
+                import sqlite3
+
+                connection = sqlite3.connect(db)
+                connection.row_factory = sqlite3.Row
+                try:
+                    rows = connection.execute(
+                        "SELECT source_id, target_id, relation_type, confidence,"
+                        " explanation FROM concept_relations"
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    rows = []
+                finally:
+                    connection.close()
+                relations = [dict(row) for row in rows]
+            except Exception:
+                relations = []
+        payload = json.dumps({"relations": relations}, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))

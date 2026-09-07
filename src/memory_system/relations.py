@@ -51,14 +51,25 @@ def discover_relations(
     api_key_env: str = "DASHSCOPE_API_KEY",
     model: str = "qwen-flash",
 ) -> list[ConceptRelation]:
-    """Read concept cards, ask the model for relations, return edges."""
+    """Read a concept-cards JSON file, ask the model for relations."""
     with open(cards_json_path, encoding="utf-8") as f:
         cards = json.load(f)
+    return discover_relations_from_cards(cards, api_key_env=api_key_env, model=model)
 
+
+def discover_relations_from_cards(
+    cards: list[dict[str, Any]],
+    *,
+    api_key_env: str = "DASHSCOPE_API_KEY",
+    model: str = "qwen-flash",
+) -> list[ConceptRelation]:
+    """Ask the model for typed edges over in-memory concept cards."""
     # Build a compact index: id, name, definition (one line)
     entries = []
     id_set = set()
     for card in cards:
+        if not isinstance(card, dict) or not card.get("id"):
+            continue
         cid = card["id"]
         if cid in id_set:
             continue
@@ -101,6 +112,40 @@ def discover_relations(
     )
     content = response.output.choices[0].message.content
     return _parse_relations(content, id_set)
+
+
+def cooccurrence_relations(cards: list[dict[str, Any]]) -> list[ConceptRelation]:
+    """Deterministic offline fallback: link cards that cite each other.
+
+    A card's ``background_concepts`` list names the concepts it builds on.
+    When one card names another card's concept, the pair gets a single
+    undirected ``related_to`` edge so the relation graph stays usable
+    without an online model.
+    """
+
+    name_to_id: dict[str, str] = {}
+    for card in cards:
+        if not isinstance(card, dict) or not card.get("id"):
+            continue
+        name_to_id.setdefault(str(card.get("name", "")).strip().casefold(), card["id"])
+    pairs: set[tuple[str, str]] = set()
+    for card in cards:
+        if not isinstance(card, dict) or not card.get("id"):
+            continue
+        for concept in card.get("background_concepts") or []:
+            other = name_to_id.get(str(concept).strip().casefold())
+            if other and other != card["id"]:
+                pairs.add(tuple(sorted((card["id"], other))))
+    return [
+        ConceptRelation(
+            source_id=source,
+            target_id=target,
+            relation_type="related_to",
+            confidence=0.4,
+            explanation="后台概念互引（离线共现推断）",
+        )
+        for source, target in sorted(pairs)
+    ]
 
 
 def _parse_relations(content: str, valid_ids: set[str]) -> list[ConceptRelation]:

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import webbrowser
 from pathlib import Path
 from typing import Any
 
+from .activation import SpreadingActivationSearch, store_relations
 from .cache import ConceptCache
 from .pipeline import analyze_path
+from .relations import cooccurrence_relations, discover_relations_from_cards
 from .storage import ConceptStore
 from .web_server import get_init_state, set_init_state, start_web_server
 
@@ -104,9 +107,32 @@ def _scan_worker(root: str) -> None:
         with _lock:
             assert _store is not None and _cache is not None
             _store.upsert_cards(cards)
+        _discover_and_store_relations(cards)
         set_init_state("done", concept_count=len(cards), current_file="")
     except Exception as exc:  # the progress page is the user-visible surface
         set_init_state("error", message=str(exc))
+
+
+def _discover_and_store_relations(cards: list) -> None:
+    """Build concept relation edges after a scan; failures keep cards usable.
+
+    Uses one online model call when DASHSCOPE_API_KEY is available, and a
+    deterministic background-concept co-occurrence fallback otherwise.
+    """
+
+    assert _database_path
+    set_init_state("relations", current_file="")
+    try:
+        cards_payload = [card.to_dict() for card in cards]
+        if os.getenv("DASHSCOPE_API_KEY"):
+            relations = discover_relations_from_cards(cards_payload)
+        else:
+            relations = cooccurrence_relations(cards_payload)
+        if relations:
+            with _lock:
+                store_relations(_database_path, relations)
+    except Exception:
+        pass  # relations are additive; an empty graph degrades search gracefully
 
 
 def scan_codebase(path: str, *, open_browser: bool = True) -> dict[str, Any]:
@@ -156,19 +182,72 @@ def _active_scan() -> dict[str, Any] | None:
 
 
 def search_concepts(query: str, limit: int = 10) -> dict[str, Any]:
-    """Search stored concept cards by query text."""
+    """Search stored concept cards, ordered as a task-oriented card sequence.
+
+    Direct FTS matches come first; cards reached over the relation graph by
+    spreading activation follow under ``related`` with the propagation path,
+    so the agent gets directly-matched concepts plus their context in one
+    ordered read instead of a flat hit list.
+    """
 
     with _lock:
         store = _get_store()
-        results = store.search(query, limit=max(1, min(limit, 50)))
+        capped = max(1, min(limit, 50))
+        results = store.search(query, limit=capped)
         payload: dict[str, Any] = {
             "query": query,
             "results": [_card_to_summary(result.card) for result in results],
         }
+        related = _related_concepts(query, results, capped)
+        if related:
+            payload["related"] = related
         active = _active_scan()
         if active is not None:
             payload["scan"] = active
         return payload
+
+
+def _related_concepts(query: str, results: list, limit: int) -> list[dict[str, Any]]:
+    """Spreading-activation neighbours of the direct hits (hop >= 1)."""
+
+    if _database_path == "":
+        return []
+    seeds = {
+        result.card.id: max(0.4, 1.0 - 0.2 * position)
+        for position, result in enumerate(results)
+    }
+    try:
+        searcher = SpreadingActivationSearch(_database_path)
+    except Exception:
+        return []
+    try:
+        spread = (
+            searcher.search_from_seeds(seeds)
+            if seeds
+            else searcher.search(query)
+        )
+    except Exception:
+        return []
+    finally:
+        searcher.close()
+    direct_ids = {result.card.id for result in results}
+    related: list[dict[str, Any]] = []
+    for item in spread:
+        card_id = str(item.card.get("id", ""))
+        if not card_id or card_id in direct_ids or item.hop == 0:
+            continue
+        related.append(
+            {
+                "card_id": card_id,
+                "name": item.card.get("name", ""),
+                "activation": item.activation,
+                "hop": item.hop,
+                "via": " → ".join(item.path),
+            }
+        )
+        if len(related) >= limit:
+            break
+    return related
 
 
 def get_card(card_id: str) -> dict[str, Any]:
@@ -205,7 +284,12 @@ def build_server() -> Any:
         ),
         mcp_types.Tool(
             name="search_concepts",
-            description="Search concept cards by natural language query.",
+            description=(
+                "Search concept cards by natural language query. Returns the "
+                "directly matched cards first, then related concepts reached "
+                "over the concept relation graph (with hop count and the "
+                "propagation path), forming an ordered reading sequence."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
