@@ -285,9 +285,11 @@ def build_server() -> Any:
         mcp_types.Tool(
             name="scan_codebase",
             description=(
-                "Scan a local codebase directory and build the concept card index "
-                "in the background. Opens the concept network page (live init "
-                "progress) and returns its URL immediately."
+                "Build the concept memory index for a project directory. "
+                "Run this once per project before searching: it reads every "
+                "source file once so that later code location needs no grep "
+                "and no whole-file reads. Returns immediately and opens a "
+                "live progress page."
             ),
             inputSchema={
                 "type": "object",
@@ -298,10 +300,14 @@ def build_server() -> Any:
         mcp_types.Tool(
             name="search_concepts",
             description=(
-                "Search concept cards by natural language query. Returns the "
-                "directly matched cards first, then related concepts reached "
-                "over the real-usage concept graph (edges recorded from past "
-                "get_card calls), forming an ordered reading sequence."
+                "PREFERRED over Grep/ripgrep when you need to find where "
+                "code lives. Give a natural-language concept or keyword "
+                "(e.g. '使用边', 'retry logic'); it returns an ordered "
+                "sequence of concept cards - direct matches first, then "
+                "concepts historically used together - each with file, "
+                "symbols and exact line numbers, using far less context "
+                "than search results or whole-file reads. Follow up with "
+                "get_card on the cards you need."
             ),
             inputSchema={
                 "type": "object",
@@ -315,11 +321,14 @@ def build_server() -> Any:
         mcp_types.Tool(
             name="get_card",
             description=(
-                "Read one or more concept cards by ID. The returned cards "
-                "(concept, evidence, line indexes) are what you consume "
-                "instead of reading whole files. Fetching several cards in "
-                "one call also records that they were used together, which "
-                "improves future searches."
+                "PREFERRED over Read for locating code. Read one or more "
+                "concept cards by ID: each returns the concept definition, "
+                "evidence symbols and exact line-indexed source excerpts, "
+                "so you usually read tens of lines instead of a whole "
+                "file. Fetching several cards in one call also records "
+                "that they were used together, which improves future "
+                "searches. Use Read only for the few extra lines the "
+                "cards do not already cover."
             ),
             inputSchema={
                 "type": "object",
