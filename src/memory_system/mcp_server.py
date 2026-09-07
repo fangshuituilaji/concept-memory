@@ -11,6 +11,7 @@ from typing import Any
 from .activation import SpreadingActivationSearch, record_usage
 from .cache import ConceptCache
 from .pipeline import analyze_path
+from .retrieval import QwenFlashRetriever, RetrievalConfig
 from .storage import ConceptStore
 from .web_server import get_init_state, set_init_state, start_web_server
 
@@ -23,6 +24,7 @@ _database_path: str = ""
 _web_server: Any | None = None
 _web_url: str = ""
 _scan_thread: threading.Thread | None = None
+_retriever: Any | None = None
 
 
 def _init(project_root: str) -> None:
@@ -159,19 +161,29 @@ def _active_scan() -> dict[str, Any] | None:
     return None
 
 
+def _get_retriever() -> Any:
+    """Online-only retriever; tests may inject a stand-in via _retriever."""
+
+    global _retriever
+    if _retriever is None:
+        _retriever = QwenFlashRetriever(RetrievalConfig())
+    return _retriever
+
+
 def search_concepts(query: str, limit: int = 10) -> dict[str, Any]:
     """Search stored concept cards, ordered as a task-oriented card sequence.
 
-    Direct FTS matches come first; cards reached over the relation graph by
-    spreading activation follow under ``related`` with the propagation path,
-    so the agent gets directly-matched concepts plus their context in one
-    ordered read instead of a flat hit list.
+    Qwen-Flash expands the query for recall and reranks the candidate pool;
+    local FTS is only the recall index, never the final ranking.  When the
+    model is unreachable the search fails after retries instead of silently
+    degrading to offline results.  Cards reached over the relation graph by
+    spreading activation follow under ``related`` with the propagation path.
     """
 
     with _lock:
         store = _get_store()
         capped = max(1, min(limit, 50))
-        results = store.search(query, limit=capped)
+        results = _get_retriever().search(store, query, capped)
         payload: dict[str, Any] = {
             "query": query,
             "results": [_card_to_summary(result.card) for result in results],

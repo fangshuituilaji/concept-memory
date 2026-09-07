@@ -143,12 +143,19 @@ class UsageSpreadTests(unittest.TestCase):
                 searcher.close()
 
 
+class _PassthroughRetriever:
+    """Test stand-in: recall via FTS, keep store order (no model calls)."""
+
+    def search(self, store, query, limit):
+        return store.search_any(query, limit=limit)
+
+
 class McpUsageWiringTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.database = str(Path(self._tmp.name) / "concepts.sqlite")
         self._saved = (mcp._store, mcp._cache, mcp._database_path,
-                       mcp._project_root, mcp._scan_thread)
+                       mcp._project_root, mcp._scan_thread, mcp._retriever)
         self.cards = [
             _card("语法解析", "把源码变成语法树。"),
             _card("结果组织", "整理处理结果。"),
@@ -158,12 +165,13 @@ class McpUsageWiringTests(unittest.TestCase):
         mcp._store.open()
         mcp._store.upsert_cards(self.cards)
         mcp._database_path = self.database
+        mcp._retriever = _PassthroughRetriever()
 
     def tearDown(self) -> None:
         if mcp._store is not None:
             mcp._store.close()
         (mcp._store, mcp._cache, mcp._database_path,
-         mcp._project_root, mcp._scan_thread) = self._saved
+         mcp._project_root, mcp._scan_thread, mcp._retriever) = self._saved
         self._tmp.cleanup()
 
     def test_multi_card_fetch_records_usage_and_feeds_search(self) -> None:

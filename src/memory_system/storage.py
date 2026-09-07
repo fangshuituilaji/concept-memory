@@ -204,6 +204,76 @@ class ConceptStore:
             for row in rows
         ]
 
+    def search_any(self, query: str, *, limit: int = 20) -> list[ConceptSearchResult]:
+        """Recall candidates matching ANY term, as a reranking pool.
+
+        Unlike :meth:`search` (which ANDs every term), this widens recall for
+        the model reranker: a pool that missed the right card can never be
+        fixed downstream.
+        """
+
+        terms = [term.strip() for term in query.split() if term.strip()]
+        if not terms:
+            return []
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        connection = self._require_connection()
+        escaped = [term.replace('"', '""') for term in terms]
+        fts_query = " OR ".join(f'"{term}"' for term in escaped)
+        try:
+            rows = connection.execute(
+                """
+                SELECT concept_search.id, bm25(concept_search) AS rank,
+                       concept_search.name, concept_search.definition,
+                       concept_search.background, concept_cards.card_json
+                FROM concept_search
+                JOIN concept_cards ON concept_cards.id = concept_search.id
+                WHERE concept_search MATCH ?
+                ORDER BY rank, concept_search.id
+                LIMIT ?
+                """,
+                (fts_query, limit),
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            raise ValueError(f"Invalid full-text query: {query!r}") from exc
+
+        if not rows:
+            # CJK substring fallback: any single term matching is enough here,
+            # because recall (not precision) is this method's job.
+            clauses = []
+            params: list[str] = []
+            for term in escaped:
+                clauses.append(
+                    "name LIKE ? OR definition LIKE ?"
+                    " OR json_extract(concept_cards.card_json, '$.background') LIKE ?"
+                    " OR json_extract(concept_cards.card_json, '$.background_concepts') LIKE ?"
+                )
+                like = f"%{term}%"
+                params.extend([like, like, like, like])
+            rows = connection.execute(
+                f"""
+                SELECT concept_cards.id, 0.0 AS rank,
+                       concept_cards.name, concept_cards.definition,
+                       json_extract(concept_cards.card_json, '$.background') AS background,
+                       concept_cards.card_json
+                FROM concept_cards
+                WHERE {' OR '.join(clauses)}
+                ORDER BY id
+                LIMIT ?
+                """,
+                (*params, limit),
+            ).fetchall()
+
+        return [
+            ConceptSearchResult(
+                card=ConceptCard.from_dict(json.loads(row["card_json"])),
+                rank=float(row["rank"]),
+                matched_fields=(),
+                explanation="候选池召回，最终顺序由 qwen-flash 重排决定。",
+            )
+            for row in rows
+        ]
+
     def rebuild_index(self) -> None:
         connection = self._require_connection()
         with connection:

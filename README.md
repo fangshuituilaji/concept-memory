@@ -9,7 +9,7 @@
 
 ## 当前实现与产品差距
 
-已具备：`memory-mcp`（`scan_codebase` / `search_concepts` / `get_card` 三个工具）、概念生成与证据绑定（含文件、符号、行号）、SQLite FTS 存储、`memory-web` 概念网络页面（初始化扫描、进度显示、灰节点、点击看卡片）。`scan_codebase` 立即返回并在后台扫描：自动启动 `memory-web` 并打开进度页（逐文件实时进度），文件级 Qwen 调用走线程池并行（默认 6 并发，120 秒超时，失败自动重试 3 次），扫描完成后清理已删除/改名文件的孤儿卡片。概念连线**只来自真实使用**：`get_card` 一次取走多张卡片时，卡片两两之间记一条共现边（计数累加），不调用模型推断语义关系；`search_concepts` 按"直接命中在前、沿真实使用边扩散的相关卡片在后"输出有序卡片序列，关联卡片带 `hop` 跳数和 `via` 传播路径。概念网络页面渲染同文件淡色连线与真实使用连线（越粗共现次数越多，有上限）。
+已具备：`memory-mcp`（`scan_codebase` / `search_concepts` / `get_card` 三个工具）、概念生成与证据绑定（含文件、符号、行号）、SQLite FTS 存储、`memory-web` 概念网络页面（初始化扫描、进度显示、灰节点、点击看卡片）。`scan_codebase` 立即返回并在后台扫描：自动启动 `memory-web` 并打开进度页（逐文件实时进度），文件级 Qwen 调用走线程池并行（默认 6 并发，120 秒超时，失败自动重试 3 次），扫描完成后清理已删除/改名文件的孤儿卡片。概念连线**只来自真实使用**：`get_card` 一次取走多张卡片时，卡片两两之间记一条共现边（计数累加），不调用模型推断语义关系；`search_concepts` 在线调用 qwen-flash 完成检索：模型先做查询扩展（中英文同义词与相关术语），本地 FTS5 只做 OR 召回候选池，再由模型按相关性重排；检索失败自动重试 3 次，重试仍失败则明确报错，**绝不静默回退到纯离线检索**。`search_concepts` 按"重排后的直接命中在前、沿真实使用边扩散的相关卡片在后"输出有序卡片序列，关联卡片带 `hop` 跳数和 `via` 传播路径。概念网络页面渲染同文件淡色连线与真实使用连线（越粗共现次数越多，有上限）。
 
 距产品完成还差：
 
@@ -28,7 +28,7 @@
 
 当前工作树中对 TypeScript/JavaScript 的 Tree-sitter 支持属于实验性扩展，尚未纳入第一版验收的语言范围。
 
-向量检索与模型推断的概念语义关系均不做：连线只来自真实使用记录，图扩散激活检索基于该使用图实现（`activation.py`）。
+检索连线仍只来自真实使用记录，图扩散激活检索基于该使用图实现（`activation.py`）；检索排序由 qwen-flash 在线完成（查询扩展 + 候选重排，`retrieval.py`），不做 embedding/向量数据库。
 
 ## 安装与运行
 
@@ -47,7 +47,7 @@ PYTHONPATH=src python3 -m memory_system.cli path/to/project \
 
 ### 接入 ZCode
 
-工作区配置 `.zcode/config.json` 已注册 `concept-memory` MCP 服务（stdio，`python -m memory_system.mcp_server`）。新开的 ZCode 会话会自动连接，工具为 `scan_codebase` / `search_concepts` / `get_card`。在线概念生成要求服务进程环境变量中存在 `DASHSCOPE_API_KEY`（MCP 服务不会读取 `.env`；未设置时使用离线回退）。
+工作区配置 `.zcode/config.json` 已注册 `concept-memory` MCP 服务（stdio，`python -m memory_system.mcp_server`）。新开的 ZCode 会话会自动连接，工具为 `scan_codebase` / `search_concepts` / `get_card`。在线概念生成**和检索**都要求服务进程环境变量中存在 `DASHSCOPE_API_KEY`（MCP 服务不会读取 `.env`）；扫描未设置时使用离线回退，但 `search_concepts` 始终要求在线模型，未设置或模型不可达时报错。
 
 Python API 示例：
 
