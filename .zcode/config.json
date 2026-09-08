@@ -5,7 +5,7 @@
         "command": "C:\\Users\\21526\\miniconda3\\python.exe",
         "args": ["-m", "memory_system.mcp_server"],
         "env": {
-          "PYTHONPATH": "C:\\Users\\21526\\Desktop\\个人\\项目\\src"
+          "PYTHONPATH": "C:\\Users\\21526\\Desktop\\个人\\Concept Memory\\src"
         }
       }
     }
