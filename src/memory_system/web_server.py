@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from typing import Any
@@ -31,12 +32,79 @@ def set_init_state(phase: str, **kwargs: Any) -> None:
         _init_state.update(kwargs)
 
 
+# Red/green MCP connection button: green while a coding agent has recently
+# called an MCP tool in this process, red otherwise.
+AGENT_IDLE_TIMEOUT_SECONDS = 300.0
+_connection: dict[str, Any] = {"last_seen": None}
+_connection_lock = threading.Lock()
+
+
+def mark_agent_seen(now: float | None = None) -> None:
+    """Record that a coding agent just called an MCP tool."""
+
+    if now is None:
+        now = time.time()
+    with _connection_lock:
+        _connection["last_seen"] = float(now)
+
+
+def get_connection_state(
+    now: float | None = None,
+    max_idle_seconds: float = AGENT_IDLE_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Return the button state; connected only while agent calls are recent."""
+
+    if now is None:
+        now = time.time()
+    with _connection_lock:
+        last_seen = _connection["last_seen"]
+    if last_seen is None:
+        return {"connected": False, "idle_seconds": None}
+    idle_seconds = max(0.0, float(now) - float(last_seen))
+    return {
+        "connected": idle_seconds <= max_idle_seconds,
+        "idle_seconds": round(idle_seconds, 1),
+    }
+
+
+# Latest search event, polled by the page so hit nodes turn blue.
+_search_event: dict[str, Any] = {"seq": 0, "query": "", "direct": [], "related": []}
+_search_lock = threading.Lock()
+
+
+def record_search_event(
+    query: str, direct_ids: list[str], related_ids: list[str]
+) -> int:
+    """Store one search's hit sets and bump the event sequence."""
+
+    with _search_lock:
+        _search_event["seq"] = int(_search_event["seq"]) + 1
+        _search_event["query"] = query
+        _search_event["direct"] = list(direct_ids)
+        _search_event["related"] = list(related_ids)
+        return int(_search_event["seq"])
+
+
+def get_search_event(since_seq: int = 0) -> dict[str, Any]:
+    """Return the latest event when it is newer than ``since_seq``."""
+
+    with _search_lock:
+        event = dict(_search_event)
+    seq = int(event["seq"])
+    if seq <= int(since_seq):
+        return {"seq": seq, "fresh": False}
+    event["fresh"] = True
+    return event
+
+
 def run_scan_with_progress(path: str) -> dict[str, Any]:
     """Delegate page-triggered scans to the shared MCP scan implementation."""
 
     from .mcp_server import scan_codebase
 
-    return scan_codebase(path, open_browser=False)
+    # A scan started from this page is not agent activity; it must not
+    # turn the MCP connection button green.
+    return scan_codebase(path, open_browser=False, from_agent=False)
 
 _HTML = r"""<!DOCTYPE html>
 <html lang="zh">
@@ -47,7 +115,9 @@ _HTML = r"""<!DOCTYPE html>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family: system-ui, sans-serif; background:#1a1a2e; color:#e0e0e0; overflow:hidden; }
 #header { position:fixed; top:0; left:0; right:0; height:48px; background:#16213e; display:flex; align-items:center; padding:0 16px; gap:12px; z-index:10; }
-#status-dot { width:10px; height:10px; border-radius:50%; background:#4ade80; }
+#mcp-status { padding:4px 12px; border-radius:14px; border:none; font-size:12px; font-weight:600; color:#fff; letter-spacing:1px; }
+#mcp-status.on { background:#16a34a; }
+#mcp-status.off { background:#dc2626; }
 #title { font-size:14px; font-weight:600; }
 #count { font-size:12px; color:#94a3b8; }
 #legend { display:flex; gap:10px; margin-left:auto; font-size:10px; color:#94a3b8; align-items:center; }
@@ -60,12 +130,14 @@ canvas { display:block; }
 </head>
 <body>
 <div id="header">
-  <div id="status-dot"></div>
+  <button id="mcp-status" class="off">MCP 未连接</button>
   <div id="title">Concept Memory</div>
   <div id="count"></div>
   <div id="legend">
     <span><i style="background:rgba(148,163,184,0.4)"></i>同文件概念</span>
     <span><i style="background:#cbd5e1"></i>真实共同使用（越粗次数越多）</span>
+    <span><i style="background:#3b82f6;border-radius:50%"></i>检索命中</span>
+    <span><i style="background:#93c5fd;border-radius:50%"></i>相关扩散</span>
   </div>
 </div>
 <canvas id="cv"></canvas>
@@ -74,8 +146,36 @@ canvas { display:block; }
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 const tooltip = document.getElementById('tooltip');
+const mcpBtn = document.getElementById('mcp-status');
 let nodes = [], edges = [], hovered = null;
 let W, H;
+
+// red/green MCP connection button, polled even while the scan is running
+async function pollConnection() {
+  try {
+    const s = await (await fetch('/api/connection')).json();
+    mcpBtn.className = s.connected ? 'on' : 'off';
+    mcpBtn.textContent = s.connected ? 'MCP 已连接' : 'MCP 未连接';
+  } catch (e) {
+    mcpBtn.className = 'off';
+    mcpBtn.textContent = 'MCP 未连接';
+  }
+}
+pollConnection();
+setInterval(pollConnection, 2000);
+
+// latest search event recolors hit nodes blue until the next search
+let highlight = {seq: 0, direct: new Set(), all: new Set()};
+async function pollSearchEvents() {
+  try {
+    const s = await (await fetch('/api/search-events?since=' + highlight.seq)).json();
+    if (!s.fresh) return;
+    highlight.seq = s.seq;
+    highlight.direct = new Set(s.direct || []);
+    highlight.all = new Set([...(s.direct || []), ...(s.related || [])]);
+  } catch (e) {}
+}
+setInterval(pollSearchEvents, 1000);
 
 function resize() {
   W = cv.width = window.innerWidth;
@@ -178,12 +278,17 @@ function step() {
 
 function draw() {
   ctx.clearRect(0,0,W,H);
+  const hasHits = highlight.all.size > 0;
   edges.forEach(e=>{
     const a=nodes[e.a], b=nodes[e.b];
     if (!a || !b) return;
     // same-file placeholders are faint; usage edges are lighter gray and
     // thicken with co-use count, capped so old links stay readable
-    if (e.usage > 0) {
+    if (hasHits && highlight.all.has(a.card.id) && highlight.all.has(b.card.id)) {
+      // links inside the current hit set light up for this search
+      ctx.strokeStyle = 'rgba(147,197,253,0.8)';
+      ctx.lineWidth = 2;
+    } else if (e.usage > 0) {
       ctx.strokeStyle = '#cbd5e1';
       ctx.lineWidth = 1 + Math.min(e.usage, 8) * 0.9;
     } else {
@@ -198,8 +303,17 @@ function draw() {
   nodes.forEach(n=>{
     ctx.beginPath();
     ctx.arc(n.x, n.y, n.r, 0, Math.PI*2);
-    ctx.fillStyle = (n===hovered) ? '#60a5fa' : 'rgba(148,163,184,0.5)';
+    let fill = 'rgba(148,163,184,0.5)';
+    if (highlight.direct.has(n.card.id)) fill = '#3b82f6';
+    else if (highlight.all.has(n.card.id)) fill = '#93c5fd';
+    if (n===hovered) fill = '#60a5fa';
+    ctx.fillStyle = fill;
     ctx.fill();
+    if (highlight.direct.has(n.card.id) && n!==hovered) {
+      ctx.strokeStyle = '#1e40af';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
     if (n===hovered) {
       ctx.strokeStyle = '#93c5fd';
       ctx.lineWidth = 2;
@@ -264,6 +378,25 @@ class _Handler(SimpleHTTPRequestHandler):
             self._serve_usage_edges()
         elif parsed.path == "/api/init-state":
             payload = json.dumps(get_init_state(), ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        elif parsed.path == "/api/connection":
+            payload = json.dumps(get_connection_state(), ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+        elif parsed.path == "/api/search-events":
+            query = parse_qs(parsed.query)
+            try:
+                since = int(query.get("since", ["0"])[0])
+            except ValueError:
+                since = 0
+            payload = json.dumps(get_search_event(since), ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))

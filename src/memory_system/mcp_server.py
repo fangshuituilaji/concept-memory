@@ -13,7 +13,13 @@ from .cache import ConceptCache
 from .pipeline import analyze_path
 from .retrieval import QwenFlashRetriever, RetrievalConfig
 from .storage import ConceptStore
-from .web_server import get_init_state, set_init_state, start_web_server
+from .web_server import (
+    get_init_state,
+    mark_agent_seen,
+    record_search_event,
+    set_init_state,
+    start_web_server,
+)
 
 _lock = threading.Lock()
 _lifecycle_lock = threading.Lock()
@@ -115,14 +121,20 @@ def _scan_worker(root: str) -> None:
         set_init_state("error", message=str(exc))
 
 
-def scan_codebase(path: str, *, open_browser: bool = True) -> dict[str, Any]:
+def scan_codebase(
+    path: str, *, open_browser: bool = True, from_agent: bool = True
+) -> dict[str, Any]:
     """Start a background index build and open the concept network progress page.
 
     Returns immediately with the page URL; ``search_concepts`` reads whatever
-    is already committed while the scan continues.
+    is already committed while the scan continues.  ``from_agent`` is False
+    only when the scan was triggered from the web page itself, which must
+    not light up the agent-connection button.
     """
 
     global _scan_thread, _web_server, _web_url
+    if from_agent:
+        mark_agent_seen()
     root = str(Path(path).expanduser().resolve()) if path.strip() else str(Path.cwd().resolve())
     with _lifecycle_lock:
         if _scan_thread is not None and _scan_thread.is_alive():
@@ -180,6 +192,7 @@ def search_concepts(query: str, limit: int = 10) -> dict[str, Any]:
     spreading activation follow under ``related`` with the propagation path.
     """
 
+    mark_agent_seen()
     with _lock:
         store = _get_store()
         capped = max(1, min(limit, 50))
@@ -191,6 +204,11 @@ def search_concepts(query: str, limit: int = 10) -> dict[str, Any]:
         related = _related_concepts(query, results, capped)
         if related:
             payload["related"] = related
+        record_search_event(
+            query,
+            [result.card.id for result in results],
+            [item["card_id"] for item in related],
+        )
         active = _active_scan()
         if active is not None:
             payload["scan"] = active
@@ -250,6 +268,7 @@ def get_card(card_ids: str | list[str]) -> dict[str, Any]:
     together and future searches spread activation over those links.
     """
 
+    mark_agent_seen()
     with _lock:
         store = _get_store()
         if isinstance(card_ids, str):
