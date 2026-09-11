@@ -353,7 +353,6 @@ async function boot() {
     if (i===undefined || j===undefined || i===j) return;
     edges.push({a:i, b:j, usage:e.count||1});
   });
-  edges.forEach((e,i)=>{ e.cur = (((e.a*31 + e.b*17 + i*13) % 7) - 3) / 3 * 0.14; });
   const degree = {};
   edges.forEach(e=>{ if (e.usage > 0) { degree[e.a]=(degree[e.a]||0)+1; degree[e.b]=(degree[e.b]||0)+1; } });
   nodes.forEach((n,i)=>{ n.r = 6.5 + Math.min(degree[i] || 0, 8) * 0.55; });
@@ -363,7 +362,7 @@ async function boot() {
 boot();
 
 function step() {
-  const maxR = Math.min(W, H) * 0.34;
+  const maxR = Math.min(W, H) * 0.31;
   for (let i=0;i<nodes.length;i++)
     for (let j=i+1;j<nodes.length;j++) {
       const a=nodes[i], b=nodes[j];
@@ -406,13 +405,20 @@ function step() {
   });
 }
 
-function project(n) {
+function project(n, t) {
+  // water ripple: the outer shell sways most, the core stays still
+  const maxR = Math.min(W, H) * 0.31;
+  const r3 = Math.sqrt(n.x*n.x + n.y*n.y + n.z*n.z) || 1;
+  const amp = 9 * Math.pow(Math.min(1, r3/maxR), 2.2);
+  const wave = Math.sin(r3 * 0.028 - t * 2.4) * amp;
+  const k = (r3 + wave) / r3;
+  const px = n.x * k, py = n.y * k, pz = n.z * k;
   const cy = Math.cos(rotY), sy = Math.sin(rotY);
-  const x1 =  n.x*cy + n.z*sy;
-  const z1 = -n.x*sy + n.z*cy;
+  const x1 =  px*cy + pz*sy;
+  const z1 = -px*sy + pz*cy;
   const cx = Math.cos(rotX), sx = Math.sin(rotX);
-  const y1 =  n.y*cx - z1*sx;
-  const z2 =  n.y*sx + z1*cx;
+  const y1 =  py*cx - z1*sx;
+  const z2 =  py*sx + z1*cx;
   const s = (FOV / (FOV - z2)) * zoom;
   n.sx = W/2 + x1*s;
   n.sy = H/2 + 26 + y1*s;
@@ -421,13 +427,10 @@ function project(n) {
   n.scale = s;
 }
 
-function edgePath(a, b, cur) {
-  const mx = (a.sx+b.sx)/2, my = (a.sy+b.sy)/2;
-  const dx = b.sx-a.sx, dy = b.sy-a.sy;
-  const d = Math.sqrt(dx*dx+dy*dy) || 1;
+function edgePath(a, b) {
   ctx.beginPath();
   ctx.moveTo(a.sx, a.sy);
-  ctx.quadraticCurveTo(mx - dy/d*d*cur, my + dx/d*d*cur, b.sx, b.sy);
+  ctx.lineTo(b.sx, b.sy);
 }
 
 function draw(now) {
@@ -436,9 +439,9 @@ function draw(now) {
   const fadeIn = bootAt ? Math.min(1, (now-bootAt)/900) : 1;
   ctx.globalAlpha = fadeIn;
   const hasHits = highlight.all.size > 0;
-  const maxR = Math.min(W, H) * 0.34;
+  const maxR = Math.min(W, H) * 0.31;
 
-  nodes.forEach(project);
+  nodes.forEach(n => project(n, t));
 
   edges.forEach(e=>{
     const a=nodes[e.a], b=nodes[e.b];
@@ -446,7 +449,7 @@ function draw(now) {
     // far side of the ball fades into the background
     const depthFade = Math.max(0.25, Math.min(1, 1.25 - ((a.depth+b.depth)/2) / (maxR*1.6)));
     if (hasHits && highlight.all.has(a.card.id) && highlight.all.has(b.card.id)) {
-      edgePath(a, b, e.cur*0.6);
+      edgePath(a, b);
       ctx.strokeStyle = 'rgba(59,130,246,' + 0.16*depthFade + ')';
       ctx.lineWidth = 6;
       ctx.stroke();
@@ -458,7 +461,7 @@ function draw(now) {
       ctx.setLineDash([]);
     } else if (e.usage > 0) {
       const w = (1 + Math.min(e.usage, 8) * 0.85) * (a.scale+b.scale)/2;
-      edgePath(a, b, e.cur);
+      edgePath(a, b);
       ctx.strokeStyle = 'rgba(203,213,225,' + 0.10*depthFade + ')';
       ctx.lineWidth = w * 2.8;
       ctx.stroke();
@@ -466,7 +469,7 @@ function draw(now) {
       ctx.lineWidth = w;
       ctx.stroke();
     } else {
-      edgePath(a, b, e.cur);
+      edgePath(a, b);
       ctx.strokeStyle = 'rgba(148,163,184,' + 0.085*depthFade + ')';
       ctx.lineWidth = 1;
       ctx.stroke();
