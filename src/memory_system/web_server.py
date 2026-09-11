@@ -118,7 +118,9 @@ body {
   background: radial-gradient(1300px 900px at 50% 38%, #1c2542 0%, #101632 52%, #090e1f 100%);
   color:#e2e8f0; overflow:hidden; height:100vh;
 }
-canvas { display:block; }
+canvas { display:block; cursor:grab; }
+canvas.dragging { cursor:grabbing; }
+canvas.onnode { cursor:pointer; }
 #header {
   position:fixed; top:0; left:0; right:0; height:56px;
   display:flex; align-items:center; padding:0 20px; gap:14px; z-index:10;
@@ -134,6 +136,7 @@ canvas { display:block; }
   font-size:11px; color:#8ea0c0; padding:3px 10px; border-radius:10px;
   background:rgba(148,163,184,0.10); border:1px solid rgba(148,163,184,0.16);
 }
+#hint { font-size:11px; color:#5f7292; }
 #mcp-status {
   display:flex; align-items:center; gap:7px; padding:5px 14px; border-radius:16px;
   border:1px solid transparent; font-size:12px; font-weight:600; color:#fff;
@@ -211,6 +214,7 @@ canvas { display:block; }
   <div id="title">CONCEPT MEMORY</div>
   <button id="mcp-status" class="off">MCP 未连接</button>
   <div id="count"></div>
+  <div id="hint">拖拽转动 · 滚轮缩放 · 点击节点看卡片</div>
   <div id="legend">
     <span><i class="dot" style="background:#cbd5e1"></i>概念</span>
     <span><i style="border-color:rgba(148,163,184,0.3)"></i>同文件</span>
@@ -241,8 +245,13 @@ const ctx = cv.getContext('2d');
 const tooltip = document.getElementById('tooltip');
 const mcpBtn = document.getElementById('mcp-status');
 const panel = document.getElementById('panel');
-let nodes = [], edges = [], hovered = null, dragNode = null;
+let nodes = [], edges = [], hovered = null;
 let W, H, dpr = 1, bootAt = 0;
+
+// 3D ball state: rotation angles, spin velocity, zoom
+const FOV = 1350;
+let rotX = -0.28, rotY = 0.6, velX = 0, velY = 0, zoom = 1;
+let dragging = false, dragMoved = 0, lastMX = 0, lastMY = 0;
 
 function resize() {
   dpr = window.devicePixelRatio || 1;
@@ -314,12 +323,18 @@ async function boot() {
   const data = await (await fetch('/api/concepts')).json();
   const cards = data.cards;
   document.getElementById('count').textContent = cards.length + ' 个概念';
+  // seed nodes inside a sphere so the cloud starts ball-shaped
+  const R0 = Math.min(W, H) * 0.20;
   cards.forEach((c,i)=>{
-    const angle = Math.random() * Math.PI * 2;
-    const rad = (0.18 + Math.random() * 0.30) * Math.min(W, H);
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(2 * Math.random() - 1);
+    const rad = R0 * (0.35 + 0.65 * Math.cbrt(Math.random()));
     nodes.push({
-      x: W/2 + Math.cos(angle) * rad, y: H/2 + Math.sin(angle) * rad,
-      vx:0, vy:0, r:8, card:c, phase: (i * 0.618) % 1
+      x: rad * Math.sin(phi) * Math.cos(theta),
+      y: rad * Math.sin(phi) * Math.sin(theta),
+      z: rad * Math.cos(phi),
+      vx:0, vy:0, vz:0, r:8, card:c, phase:(i * 0.618) % 1,
+      sx:0, sy:0, sr:0, depth:0, scale:1
     });
   });
   const idToNode = {};
@@ -338,7 +353,7 @@ async function boot() {
     if (i===undefined || j===undefined || i===j) return;
     edges.push({a:i, b:j, usage:e.count||1});
   });
-  edges.forEach((e,i)=>{ e.cur = (((e.a*31 + e.b*17 + i*13) % 7) - 3) / 3 * 0.16; });
+  edges.forEach((e,i)=>{ e.cur = (((e.a*31 + e.b*17 + i*13) % 7) - 3) / 3 * 0.14; });
   const degree = {};
   edges.forEach(e=>{ if (e.usage > 0) { degree[e.a]=(degree[e.a]||0)+1; degree[e.b]=(degree[e.b]||0)+1; } });
   nodes.forEach((n,i)=>{ n.r = 6.5 + Math.min(degree[i] || 0, 8) * 0.55; });
@@ -348,55 +363,71 @@ async function boot() {
 boot();
 
 function step() {
+  const maxR = Math.min(W, H) * 0.34;
   for (let i=0;i<nodes.length;i++)
     for (let j=i+1;j<nodes.length;j++) {
       const a=nodes[i], b=nodes[j];
-      let dx=b.x-a.x, dy=b.y-a.y;
-      let d2=dx*dx+dy*dy;
+      let dx=b.x-a.x, dy=b.y-a.y, dz=b.z-a.z;
+      let d2=dx*dx+dy*dy+dz*dz;
       if (d2<1) d2=1;
-      const f=1750/d2;
+      const f=1700/d2;
       const d=Math.sqrt(d2);
-      dx/=d; dy/=d;
-      a.vx-=dx*f; a.vy-=dy*f;
-      b.vx+=dx*f; b.vy+=dy*f;
-      // gentle collision so nodes never fully overlap
-      const minD = a.r + b.r + 22;
+      dx/=d; dy/=d; dz/=d;
+      a.vx-=dx*f; a.vy-=dy*f; a.vz-=dz*f;
+      b.vx+=dx*f; b.vy+=dy*f; b.vz+=dz*f;
+      const minD = a.r + b.r + 20;
       if (d < minD) {
         const push = (minD - d) * 0.08;
-        a.vx-=dx*push; a.vy-=dy*push;
-        b.vx+=dx*push; b.vy+=dy*push;
+        a.vx-=dx*push; a.vy-=dy*push; a.vz-=dz*push;
+        b.vx+=dx*push; b.vy+=dy*push; b.vz+=dz*push;
       }
     }
   edges.forEach(e=>{
     const a=nodes[e.a], b=nodes[e.b];
     if (!a || !b) return;
-    const dx=b.x-a.x, dy=b.y-a.y;
-    const d=Math.sqrt(dx*dx+dy*dy)||1;
-    const rest = e.usage > 0 ? 130 : 95;
-    const f=0.018*(d-rest);
-    a.vx+=dx/d*f; a.vy+=dy/d*f;
-    b.vx-=dx/d*f; b.vy-=dy/d*f;
+    const dx=b.x-a.x, dy=b.y-a.y, dz=b.z-a.z;
+    const d=Math.sqrt(dx*dx+dy*dy+dz*dz)||1;
+    const rest = e.usage > 0 ? 125 : 88;
+    const f=0.016*(d-rest);
+    a.vx+=dx/d*f; a.vy+=dy/d*f; a.vz+=dz/d*f;
+    b.vx-=dx/d*f; b.vy-=dy/d*f; b.vz-=dz/d*f;
   });
   nodes.forEach(n=>{
-    n.vx += (W/2-n.x)*0.0016;
-    n.vy += (H/2+26-n.y)*0.0016;
-    n.vx *= 0.86; n.vy *= 0.86;
-    const sp = Math.sqrt(n.vx*n.vx + n.vy*n.vy);
-    if (sp > 5) { n.vx *= 5/sp; n.vy *= 5/sp; }
-    if (n === dragNode) { n.vx = 0; n.vy = 0; return; }
-    n.x += n.vx; n.y += n.vy;
-    n.x = Math.max(n.r+12, Math.min(W-n.r-12, n.x));
-    n.y = Math.max(n.r+70, Math.min(H-n.r-12, n.y));
+    // spherical gravity: everything folds toward the ball center
+    n.vx += -n.x*0.0045; n.vy += -n.y*0.0045; n.vz += -n.z*0.0045;
+    // a firm shell so the cloud stays a ball, not a pancake
+    const d = Math.sqrt(n.x*n.x + n.y*n.y + n.z*n.z) || 1;
+    if (d > maxR) {
+      const pull = (d - maxR) * 0.03;
+      n.vx -= n.x/d*pull; n.vy -= n.y/d*pull; n.vz -= n.z/d*pull;
+    }
+    n.vx *= 0.86; n.vy *= 0.86; n.vz *= 0.86;
+    n.x += n.vx; n.y += n.vy; n.z += n.vz;
   });
 }
 
+function project(n) {
+  const cy = Math.cos(rotY), sy = Math.sin(rotY);
+  const x1 =  n.x*cy + n.z*sy;
+  const z1 = -n.x*sy + n.z*cy;
+  const cx = Math.cos(rotX), sx = Math.sin(rotX);
+  const y1 =  n.y*cx - z1*sx;
+  const z2 =  n.y*sx + z1*cx;
+  const s = (FOV / (FOV - z2)) * zoom;
+  n.sx = W/2 + x1*s;
+  n.sy = H/2 + 26 + y1*s;
+  n.sr = n.r * s;
+  n.depth = z2;
+  n.scale = s;
+}
+
 function edgePath(a, b, cur) {
-  const mx = (a.x+b.x)/2, my = (a.y+b.y)/2;
-  const dx = b.x-a.x, dy = b.y-a.y;
+  const mx = (a.sx+b.sx)/2, my = (a.sy+b.sy)/2;
+  const dx = b.sx-a.sx, dy = b.sy-a.sy;
   const d = Math.sqrt(dx*dx+dy*dy) || 1;
   ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  ctx.quadraticCurveTo(mx - dy/d*d*cur, my + dx/d*d*cur, b.x, b.y);
+  ctx.moveTo(a.sx, a.sy);
+  ctx.quadraticCurveTo(mx - dy/d*d*cur, my + dx/d*d*cur, b.sx, b.sy);
 }
 
 function draw(now) {
@@ -405,122 +436,146 @@ function draw(now) {
   const fadeIn = bootAt ? Math.min(1, (now-bootAt)/900) : 1;
   ctx.globalAlpha = fadeIn;
   const hasHits = highlight.all.size > 0;
+  const maxR = Math.min(W, H) * 0.34;
+
+  nodes.forEach(project);
 
   edges.forEach(e=>{
     const a=nodes[e.a], b=nodes[e.b];
     if (!a || !b) return;
+    // far side of the ball fades into the background
+    const depthFade = Math.max(0.25, Math.min(1, 1.25 - ((a.depth+b.depth)/2) / (maxR*1.6)));
     if (hasHits && highlight.all.has(a.card.id) && highlight.all.has(b.card.id)) {
-      // flowing dashes mark the live search hit set
       edgePath(a, b, e.cur*0.6);
-      ctx.strokeStyle = 'rgba(59,130,246,0.16)';
+      ctx.strokeStyle = 'rgba(59,130,246,' + 0.16*depthFade + ')';
       ctx.lineWidth = 6;
       ctx.stroke();
-      ctx.strokeStyle = 'rgba(147,197,253,0.95)';
+      ctx.strokeStyle = 'rgba(147,197,253,' + 0.95*depthFade + ')';
       ctx.lineWidth = 1.8;
       ctx.setLineDash([7,7]);
       ctx.lineDashOffset = -now/36;
       ctx.stroke();
       ctx.setLineDash([]);
     } else if (e.usage > 0) {
-      // silver with a soft halo; thickness grows with co-use, capped
-      const w = 1 + Math.min(e.usage, 8) * 0.85;
+      const w = (1 + Math.min(e.usage, 8) * 0.85) * (a.scale+b.scale)/2;
       edgePath(a, b, e.cur);
-      ctx.strokeStyle = 'rgba(203,213,225,0.10)';
+      ctx.strokeStyle = 'rgba(203,213,225,' + 0.10*depthFade + ')';
       ctx.lineWidth = w * 2.8;
       ctx.stroke();
-      ctx.strokeStyle = 'rgba(222,232,244,' + (0.30 + Math.min(e.usage,8)*0.06) + ')';
+      ctx.strokeStyle = 'rgba(222,232,244,' + (0.30 + Math.min(e.usage,8)*0.06)*depthFade + ')';
       ctx.lineWidth = w;
       ctx.stroke();
     } else {
       edgePath(a, b, e.cur);
-      ctx.strokeStyle = 'rgba(148,163,184,0.075)';
+      ctx.strokeStyle = 'rgba(148,163,184,' + 0.085*depthFade + ')';
       ctx.lineWidth = 1;
       ctx.stroke();
     }
   });
 
-  nodes.forEach(n=>{
+  // painter's order: far nodes first, near nodes last
+  const order = nodes.map((n,i)=>i).sort((i,j)=>nodes[i].depth - nodes[j].depth);
+  order.forEach(i=>{
+    const n = nodes[i];
     const isDirect = highlight.direct.has(n.card.id);
     const isRelated = highlight.all.has(n.card.id);
     const isHover = n === hovered;
+    const near = Math.max(0, Math.min(1, 0.5 + n.depth/(maxR*1.5)));   // 0 far, 1 near
     const scale = isHover ? 1.28 : 1;
-    const r = n.r * scale;
+    const r = n.sr * scale * (0.82 + 0.18*near);
+    const depthFade = 0.38 + 0.62*near;
 
-    // halo
     const haloR = r * (isDirect ? 3.4 : 2.6);
-    const halo = ctx.createRadialGradient(n.x, n.y, r*0.4, n.x, n.y, haloR);
-    if (isDirect)      { halo.addColorStop(0,'rgba(96,165,250,0.55)'); halo.addColorStop(1,'rgba(96,165,250,0)'); }
-    else if (isRelated){ halo.addColorStop(0,'rgba(147,197,253,0.30)'); halo.addColorStop(1,'rgba(147,197,253,0)'); }
-    else if (isHover)  { halo.addColorStop(0,'rgba(148,163,184,0.40)'); halo.addColorStop(1,'rgba(148,163,184,0)'); }
-    else               { halo.addColorStop(0,'rgba(148,163,184,0.16)'); halo.addColorStop(1,'rgba(148,163,184,0)'); }
+    const halo = ctx.createRadialGradient(n.sx, n.sy, r*0.4, n.sx, n.sy, haloR);
+    if (isDirect)      { halo.addColorStop(0,'rgba(96,165,250,' + 0.55*depthFade + ')'); halo.addColorStop(1,'rgba(96,165,250,0)'); }
+    else if (isRelated){ halo.addColorStop(0,'rgba(147,197,253,' + 0.30*depthFade + ')'); halo.addColorStop(1,'rgba(147,197,253,0)'); }
+    else if (isHover)  { halo.addColorStop(0,'rgba(148,163,184,' + 0.40*depthFade + ')'); halo.addColorStop(1,'rgba(148,163,184,0)'); }
+    else               { halo.addColorStop(0,'rgba(148,163,184,' + 0.16*depthFade + ')'); halo.addColorStop(1,'rgba(148,163,184,0)'); }
     ctx.fillStyle = halo;
-    ctx.beginPath(); ctx.arc(n.x, n.y, haloR, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(n.sx, n.sy, haloR, 0, Math.PI*2); ctx.fill();
 
-    // pulsing ring on direct hits while a search is fresh
     if (isDirect && highlight.at) {
       const age = (now - highlight.at) / 1000;
       if (age < 6) {
         const p = (t*0.9 + n.phase) % 1;
-        ctx.strokeStyle = 'rgba(96,165,250,' + (0.5 * (1-p) * Math.max(0, 1-age/6)) + ')';
+        ctx.strokeStyle = 'rgba(96,165,250,' + (0.5 * (1-p) * Math.max(0, 1-age/6) * depthFade) + ')';
         ctx.lineWidth = 1.5;
-        ctx.beginPath(); ctx.arc(n.x, n.y, r + 4 + p*20, 0, Math.PI*2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(n.sx, n.sy, r + 4 + p*20, 0, Math.PI*2); ctx.stroke();
       }
     }
 
-    // body with a subtle top-left light
-    const body = ctx.createRadialGradient(n.x-r*0.35, n.y-r*0.4, r*0.15, n.x, n.y, r);
+    const body = ctx.createRadialGradient(n.sx-r*0.35, n.sy-r*0.4, r*0.15, n.sx, n.sy, r);
     if (isDirect)      { body.addColorStop(0,'#dbeafe'); body.addColorStop(1,'#2563eb'); }
     else if (isRelated){ body.addColorStop(0,'#e0eaff'); body.addColorStop(1,'#7fa8f5'); }
     else               { body.addColorStop(0,'#eef2f7'); body.addColorStop(1,'#8494ab'); }
+    ctx.globalAlpha = fadeIn * depthFade;
     ctx.fillStyle = body;
-    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(n.sx, n.sy, r, 0, Math.PI*2); ctx.fill();
     ctx.strokeStyle = isDirect ? 'rgba(37,99,235,0.9)'
                     : isRelated ? 'rgba(127,168,245,0.8)'
                     : 'rgba(15,23,42,0.45)';
     ctx.lineWidth = 1;
     ctx.stroke();
+    ctx.globalAlpha = fadeIn;
 
-    // labels: hovered node and fresh direct hits
     if (isHover || (isDirect && highlight.at && now - highlight.at < 8000)) {
       ctx.font = (isHover ? '600 ' : '') + '11px "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillStyle = 'rgba(9,14,31,0.55)';
       const label = n.card.name;
       const tw = ctx.measureText(label).width;
-      const ly = n.y + r + 14;
+      const ly = n.sy + r + 14;
+      ctx.fillStyle = 'rgba(9,14,31,0.55)';
       ctx.beginPath();
-      ctx.roundRect(n.x - tw/2 - 5, ly - 9.5, tw + 10, 15, 7.5);
+      ctx.roundRect(n.sx - tw/2 - 5, ly - 9.5, tw + 10, 15, 7.5);
       ctx.fill();
       ctx.fillStyle = isHover ? '#eef4ff' : '#cdd9f0';
-      ctx.fillText(label, n.x, ly + 3.5);
+      ctx.fillText(label, n.sx, ly + 3.5);
     }
   });
   ctx.globalAlpha = 1;
 }
 
 function animate(now) {
+  now = now || performance.now();
   step();
-  draw(now || performance.now());
+  if (!dragging) {
+    rotY += velY; rotX += velX;
+    rotX = Math.max(-1.25, Math.min(1.25, rotX));
+    velX *= 0.94; velY *= 0.94;
+    // idle drift keeps the ball alive
+    if (Math.abs(velY) < 0.0004) rotY += 0.0011;
+  }
+  draw(now);
   requestAnimationFrame(animate);
 }
 
 function nodeAt(x, y) {
   for (let i = nodes.length - 1; i >= 0; i--) {
     const n = nodes[i];
-    const dx = x - n.x, dy = y - n.y;
-    if (dx*dx + dy*dy < (n.r+5)*(n.r+5)) return n;
+    const dx = x - n.sx, dy = y - n.sy;
+    if (dx*dx + dy*dy < (n.sr+5)*(n.sr+5)) return n;
   }
   return null;
 }
 
-cv.addEventListener('mousemove', e=>{
-  if (dragNode) {
-    dragNode.x = Math.max(dragNode.r+12, Math.min(W-dragNode.r-12, e.clientX));
-    dragNode.y = Math.max(dragNode.r+70, Math.min(H-dragNode.r-12, e.clientY));
+cv.addEventListener('mousedown', e=>{
+  dragging = true; dragMoved = 0;
+  lastMX = e.clientX; lastMY = e.clientY;
+  cv.classList.add('dragging');
+});
+window.addEventListener('mousemove', e=>{
+  if (dragging) {
+    const dx = e.clientX - lastMX, dy = e.clientY - lastMY;
+    lastMX = e.clientX; lastMY = e.clientY;
+    dragMoved += Math.abs(dx) + Math.abs(dy);
+    rotY += dx * 0.006;
+    rotX = Math.max(-1.25, Math.min(1.25, rotX + dy * 0.006));
+    velY = dx * 0.006; velX = dy * 0.006;
+    tooltip.style.display = 'none';
     return;
   }
   hovered = nodeAt(e.clientX, e.clientY);
-  cv.style.cursor = hovered ? 'grab' : 'default';
+  cv.classList.toggle('onnode', !!hovered);
   if (hovered) {
     tooltip.style.display='block';
     tooltip.style.left=Math.min(e.clientX+14, W-310)+'px';
@@ -531,20 +586,25 @@ cv.addEventListener('mousemove', e=>{
     tooltip.style.display='none';
   }
 });
-cv.addEventListener('mousedown', e=>{
-  const n = nodeAt(e.clientX, e.clientY);
-  if (n) { dragNode = n; cv.style.cursor = 'grabbing'; }
+window.addEventListener('mouseup', e=>{
+  if (!dragging) return;
+  dragging = false;
+  cv.classList.remove('dragging');
+  if (dragMoved < 6) {
+    // a click, not a drag: open the card panel when a node is under it
+    const n = nodeAt(e.clientX, e.clientY);
+    if (n) openPanel(n); else closePanel();
+  }
 });
-window.addEventListener('mouseup', ()=>{
-  if (dragNode) { dragNode = null; cv.style.cursor = hovered ? 'grab' : 'default'; }
-});
+cv.addEventListener('wheel', e=>{
+  e.preventDefault();
+  zoom = Math.max(0.6, Math.min(1.9, zoom * (1 - e.deltaY * 0.0012)));
+}, {passive:false});
 
 function closePanel() { panel.classList.remove('open'); }
 document.getElementById('panel-close').addEventListener('click', closePanel);
 
-cv.addEventListener('click', e=>{
-  const n = nodeAt(e.clientX, e.clientY);
-  if (!n) { closePanel(); return; }
+function openPanel(n) {
   const c = n.card;
   const idx = nodes.indexOf(n);
   const names = {};
@@ -576,10 +636,11 @@ cv.addEventListener('click', e=>{
     title.style.display = 'none';
   }
   panel.classList.add('open');
-});
+}
 </script>
 </body>
 </html>"""
+
 
 
 
