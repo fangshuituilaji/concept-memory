@@ -158,6 +158,40 @@ _TS_LANG = None
 _JS_LANG = None
 
 
+def _analyze_markdown(code_file: CodeFile) -> SourceFacts:
+    """Anchor markdown concepts on headings; the body feeds the synthesizer."""
+    symbols: list[SymbolFact] = []
+    inside_fence = False
+    for line_number, line in enumerate(code_file.text.splitlines(), start=1):
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            inside_fence = not inside_fence
+            continue
+        if inside_fence:
+            continue
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip()
+            if heading:
+                symbols.append(
+                    SymbolFact(
+                        name=heading,
+                        kind="heading",
+                        qualified_name=f"{_module_name(code_file.relative_path)} · {heading}",
+                        start_line=line_number,
+                        end_line=line_number,
+                        signature=stripped,
+                        docstring=None,
+                    )
+                )
+    source_bytes = code_file.text.encode("utf-8")
+    return SourceFacts(
+        file=code_file,
+        module=_module_name(code_file.relative_path),
+        source_digest=sha256(source_bytes).hexdigest(),
+        symbols=tuple(symbols),
+    )
+
+
 def _get_language(suffix: str):
     global _PY_LANG, _TS_LANG, _JS_LANG
     from tree_sitter import Language
@@ -194,6 +228,8 @@ class TreeSitterSourceAnalyzer:
         # does not require the optional Tree-sitter extras.
         if code_file.path.suffix == ".py":
             return self._python.analyze(code_file)
+        if code_file.path.suffix == ".md":
+            return _analyze_markdown(code_file)
         lang = _get_language(code_file.path.suffix)
         if lang is None:
             raise ConceptExtractionError(

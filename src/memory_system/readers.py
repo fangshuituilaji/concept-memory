@@ -7,8 +7,9 @@ from pathlib import Path
 
 
 # Phase 1 acceptance is Python-first. TS/JS can be enabled explicitly with
-# ``extensions=`` after installing the optional tree-sitter extra.
-DEFAULT_EXTENSIONS = frozenset({".py"})
+# ``extensions=`` after installing the optional tree-sitter extra. Markdown
+# documents join by default because agents keep project knowledge in them.
+DEFAULT_EXTENSIONS = frozenset({".py", ".md"})
 DEFAULT_IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
