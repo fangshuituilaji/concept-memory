@@ -1,7 +1,10 @@
-"""Qwen-Flash driven retrieval: query expansion plus candidate reranking.
+"""Qwen-Flash driven retrieval: the model reads the full card catalog.
 
 Retrieval is online-only by design: when the model is unreachable the search
-fails loudly after retries instead of silently degrading to local FTS.
+fails loudly after retries instead of silently degrading to local FTS.  There
+is intentionally no lexical recall step (FTS/substring): the whole catalog of
+card names and definitions is placed in the model context, so a relevant card
+can never be lost to tokenizer or matching quirks before the model sees it.
 """
 
 from __future__ import annotations
@@ -11,6 +14,9 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+from .models import ConceptCard
+from .storage import ConceptSearchResult
 
 REQUEST_TIMEOUT_SECONDS = 60
 MAX_ATTEMPTS = 3
@@ -22,12 +28,14 @@ class RetrievalConfig:
 
     model: str = "qwen-flash"
     api_key_env: str = "DASHSCOPE_API_KEY"
-    candidate_pool: int = 30
-    max_keywords: int = 8
+    # Catalogs above one batch are ranked batch-by-batch first; winners meet
+    # again in a final call. Small projects hit the single-call fast path.
+    rank_batch_size: int = 150
+    shortlist_per_batch: int = 10
 
 
 class CandidateSource(Protocol):
-    def search_any(self, query: str, *, limit: int) -> list: ...
+    def all_cards(self, *, limit: int | None = None) -> list[ConceptCard]: ...
 
 
 class QwenFlashRetriever:
@@ -38,79 +46,71 @@ class QwenFlashRetriever:
     def __init__(self, config: RetrievalConfig | None = None):
         self.config = config or RetrievalConfig()
 
-    def search(self, store: CandidateSource, query: str, limit: int) -> list:
-        keywords = self.expand(query)
-        recall = " ".join([query, *keywords])
-        candidates = store.search_any(recall, limit=self.config.candidate_pool)
-        if not candidates:
+    def search(self, store: CandidateSource, query: str, limit: int) -> list[ConceptSearchResult]:
+        """Select relevant cards by showing the model the full catalog."""
+
+        cards = store.all_cards()
+        if not cards:
             return []
-        ranked = self.rerank(query, candidates)
-        return ranked[:limit]
-
-    def expand(self, query: str) -> list[str]:
-        """Ask the model for extra recall keywords (synonyms, translations)."""
-
-        content = self._call(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "你是代码概念检索的查询扩展器。把用户的自然语言查询改写为"
-                        f"最多 {self.config.max_keywords} 个适合全文检索的关键词或短语，"
-                        "包含中文与英文同义词、相关代码术语。只返回 JSON："
-                        '{"keywords": ["...", "..."]}，不要其他内容。'
-                    ),
-                },
-                {"role": "user", "content": query},
-            ]
-        )
-        try:
-            payload = json.loads(_strip_code_fence(content))
-            keywords = payload.get("keywords", []) if isinstance(payload, dict) else []
-        except json.JSONDecodeError:
-            keywords = []
-        return [str(item).strip() for item in keywords if str(item).strip()][
-            : self.config.max_keywords
+        batch_size = max(1, self.config.rank_batch_size)
+        batches = [cards[i : i + batch_size] for i in range(0, len(cards), batch_size)]
+        if len(batches) == 1:
+            finalists = batches[0]
+        else:
+            finalists = []
+            for batch in batches:
+                finalists.extend(
+                    self.rank(query, batch)[: self.config.shortlist_per_batch]
+                )
+        ordered = self.rank(query, finalists)[: max(1, limit)]
+        return [
+            ConceptSearchResult(
+                card=card,
+                rank=float(position),
+                matched_fields=(),
+                explanation="selected by qwen-flash from the full catalog",
+            )
+            for position, card in enumerate(ordered)
         ]
 
-    def rerank(self, query: str, candidates: list) -> list:
-        """Order candidates by relevance to the query using the model."""
+    def rank(self, query: str, cards: list[ConceptCard]) -> list[ConceptCard]:
+        """Order cards by relevance to the query using the model."""
 
-        listing = "\n".join(
-            f"{index}. {item.card.name} | {item.card.definition[:100]}"
-            for index, item in enumerate(candidates)
+        catalog = "\n".join(
+            f"{card.id} | {card.name} | {card.definition}" for card in cards
         )
         content = self._call(
             [
                 {
                     "role": "system",
                     "content": (
-                        "你是代码概念检索的重排器。给定用户查询和候选概念卡片列表，"
-                        "按与查询的相关性从高到低排序，只返回相关卡片的编号，格式："
-                        '{"order": [2, 0, 5]}，不要其他内容。'
+                        "你是代码概念检索器。给定用户查询和概念卡片目录（每行一张卡："
+                        "卡片ID | 概念名 | 定义），从中挑选与查询相关的卡片，"
+                        "按相关性从高到低排序，只返回相关卡片的ID，格式："
+                        '{"ids": ["...", "..."]}，不要其他内容。'
                     ),
                 },
-                {"role": "user", "content": f"查询：{query}\n\n候选卡片：\n{listing}"},
+                {"role": "user", "content": f"查询：{query}\n\n卡片目录：\n{catalog}"},
             ]
         )
         try:
             payload = json.loads(_strip_code_fence(content))
-            order = payload.get("order", []) if isinstance(payload, dict) else []
-        except json.JSONDecodeError:
-            order = []
-        ranked: list = []
-        seen: set[int] = set()
-        for raw in order:
-            try:
-                index = int(raw)
-            except (TypeError, ValueError):
-                continue
-            if 0 <= index < len(candidates) and index not in seen:
-                seen.add(index)
-                ranked.append(candidates[index])
-        # Model-missed candidates keep their recall order after the ranked ones
-        # so a malformed rerank never loses direct hits entirely.
-        ranked.extend(item for index, item in enumerate(candidates) if index not in seen)
+            ids = payload.get("ids", []) if isinstance(payload, dict) else []
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("Online retrieval returned invalid JSON") from exc
+        by_id = {card.id: card for card in cards}
+        ranked: list[ConceptCard] = []
+        seen: set[str] = set()
+        for raw in ids:
+            card_id = str(raw).strip()
+            if card_id in by_id and card_id not in seen:
+                seen.add(card_id)
+                ranked.append(by_id[card_id])
+        if not ranked:
+            raise RuntimeError("Online retrieval returned no usable card ids")
+        # Model-missed cards keep their catalog order after the ranked ones
+        # so a partial answer never loses direct hits entirely.
+        ranked.extend(card for card in cards if card.id not in seen)
         return ranked
 
     def _call(self, messages: list[dict[str, str]]) -> str:

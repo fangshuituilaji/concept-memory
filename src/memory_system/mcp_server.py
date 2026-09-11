@@ -185,11 +185,13 @@ def _get_retriever() -> Any:
 def search_concepts(query: str, limit: int = 10) -> dict[str, Any]:
     """Search stored concept cards, ordered as a task-oriented card sequence.
 
-    Qwen-Flash expands the query for recall and reranks the candidate pool;
-    local FTS is only the recall index, never the final ranking.  When the
-    model is unreachable the search fails after retries instead of silently
-    degrading to offline results.  Cards reached over the relation graph by
-    spreading activation follow under ``related`` with the propagation path.
+    Qwen-Flash reads the full catalog of card names and definitions and
+    returns the relevant card IDs; complete cards are then loaded from the
+    store by ID.  There is no lexical recall step that could drop a relevant
+    card before the model sees it.  When the model is unreachable the search
+    fails after retries instead of silently degrading to offline results.
+    Cards reached over the relation graph by spreading activation follow
+    under ``related`` with the propagation path.
     """
 
     mark_agent_seen()

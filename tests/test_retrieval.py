@@ -9,7 +9,7 @@ from unittest import mock
 from pathlib import Path
 
 from memory_system.models import ConceptCard, ConceptKind, SourceLocation
-from memory_system.retrieval import QwenFlashRetriever
+from memory_system.retrieval import QwenFlashRetriever, RetrievalConfig
 from memory_system.storage import ConceptStore
 
 
@@ -56,8 +56,8 @@ class SearchAnyRecallTests(unittest.TestCase):
 
 
 class _ScriptedRetriever(QwenFlashRetriever):
-    def __init__(self, responses):
-        super().__init__()
+    def __init__(self, responses, config=None):
+        super().__init__(config)
         self._responses = list(responses)
         self.calls: list[list[dict[str, str]]] = []
 
@@ -66,50 +66,83 @@ class _ScriptedRetriever(QwenFlashRetriever):
         return self._responses.pop(0)
 
 
+def _ids(*cards: ConceptCard) -> list[str]:
+    return [card.id for card in cards]
+
+
 class QwenFlashRetrieverTests(unittest.TestCase):
-    def test_search_expands_recalls_and_reranks(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            store = ConceptStore(str(Path(tmp) / "concepts.sqlite"))
-            store.open()
-            cards = [
-                _card("全文检索", "FTS5 匹配。"),
-                _card("概念网络可视化", "力导向图。"),
-            ]
-            store.upsert_cards(cards)
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _store_with(self, *cards: ConceptCard) -> ConceptStore:
+        store = ConceptStore(str(Path(self._tmp.name) / "concepts.sqlite"))
+        store.open()
+        store.upsert_cards(list(cards))
+        return store
+
+    def test_search_selects_from_full_catalog_in_one_call(self) -> None:
+        fts, web = _card("全文检索", "FTS 匹配。"), _card("概念网络可视化", "力导向图。")
+        store = self._store_with(fts, web)
+        try:
+            catalog_order = store.all_cards()
             retriever = _ScriptedRetriever(
-                [
-                    '{"keywords": ["检索"]}',
-                    '{"order": [1, 0]}',
-                ]
+                ['{"ids": [%s]}' % ", ".join('"%s"' % i for i in _ids(web, fts))]
             )
             results = retriever.search(store, "web 页面 可视化", limit=10)
+        finally:
             store.close()
         self.assertEqual([r.card.name for r in results], ["概念网络可视化", "全文检索"])
+        # The whole catalog reached the model in a single call.
+        self.assertEqual(len(retriever.calls), 1)
+        sent_catalog = retriever.calls[0][1]["content"]
+        self.assertIn("概念网络可视化", sent_catalog)
+        self.assertIn("全文检索", sent_catalog)
+        self.assertIn(catalog_order[0].id, sent_catalog)
+
+    def test_large_catalog_is_ranked_in_batches(self) -> None:
+        first, second = _card("甲", "第一个。"), _card("乙", "第二个。")
+        config = RetrievalConfig(rank_batch_size=1, shortlist_per_batch=10)
+        store = self._store_with(first, second)
+        try:
+            retriever = _ScriptedRetriever(
+                [
+                    '{"ids": ["%s"]}' % first.id,
+                    '{"ids": ["%s"]}' % second.id,
+                    '{"ids": [%s]}' % ", ".join('"%s"' % i for i in _ids(second, first)),
+                ],
+                config=config,
+            )
+            results = retriever.search(store, "查询", limit=10)
+        finally:
+            store.close()
+        self.assertEqual([r.card.name for r in results], ["乙", "甲"])
+        # Two batch calls plus one final call over the shortlist.
+        self.assertEqual(len(retriever.calls), 3)
+
+    def test_rank_appends_cards_missed_by_the_model(self) -> None:
+        first, second = _card("甲", "第一个。"), _card("乙", "第二个。")
+        retriever = _ScriptedRetriever(['{"ids": ["%s"]}' % second.id])
+        ranked = retriever.rank("查询", [first, second])
+        self.assertEqual([card.name for card in ranked], ["乙", "甲"])
+
+    def test_rank_fails_loudly_on_garbage(self) -> None:
+        retriever = _ScriptedRetriever(["not json at all"])
+        with self.assertRaises(RuntimeError):
+            retriever.rank("查询", [_card("甲", "第一个。")])
 
     def test_missing_api_key_fails_without_offline_fallback(self) -> None:
         retriever = QwenFlashRetriever()
-        with tempfile.TemporaryDirectory() as tmp:
-            store = ConceptStore(str(Path(tmp) / "concepts.sqlite"))
-            store.open()
-            try:
-                with mock.patch.dict(os.environ, clear=True):
-                    os.environ.pop("DASHSCOPE_API_KEY", None)
-                    with self.assertRaises(RuntimeError):
-                        retriever.search(store, "任意查询", limit=5)
-            finally:
-                store.close()
-
-    def test_rerank_appends_candidates_missed_by_the_model(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            store = ConceptStore(str(Path(tmp) / "concepts.sqlite"))
-            store.open()
-            cards = [_card("甲", "第一个。"), _card("乙", "第二个。")]
-            store.upsert_cards(cards)
-            candidates = store.search_any("甲 乙", limit=10)
-            retriever = _ScriptedRetriever(['{"order": [1]}'])
-            ranked = retriever.rerank("查询", candidates)
+        store = self._store_with(_card("甲", "第一个。"))
+        try:
+            with mock.patch.dict(os.environ, clear=True):
+                os.environ.pop("DASHSCOPE_API_KEY", None)
+                with self.assertRaises(RuntimeError):
+                    retriever.search(store, "任意查询", limit=5)
+        finally:
             store.close()
-        self.assertEqual([r.card.name for r in ranked], ["乙", "甲"])
 
 
 if __name__ == "__main__":
