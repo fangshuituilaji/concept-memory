@@ -67,6 +67,7 @@ def analyze_path(
     source_sending_policy: SourceSendingPolicy | str | bool | None = None,
     max_workers: int = 6,
     progress_callback: Callable[[int, int, str], None] | None = None,
+    files: Iterable[Path] | None = None,
 ) -> list[ConceptCard]:
     """Analyze each source file into a small set of file-level concepts.
 
@@ -76,7 +77,9 @@ def analyze_path(
     and ``cache_path`` enable source/configuration-keyed draft reuse.  Draft
     synthesis issues one model call per file, so the calls run on a thread pool
     of ``max_workers``; ``progress_callback(done, total, relative_path)`` fires
-    as each file's drafts resolve.
+    as each file's drafts resolve.  ``files`` restricts the run to an explicit
+    file set (incremental rescans); discovery and cache pruning are skipped in
+    that mode because the caller already knows the full file list.
     """
 
     target = Path(path).expanduser().resolve()
@@ -98,10 +101,17 @@ def analyze_path(
             else "online"
         ),
     )
-    discovered_files = discover_code_files(target, extensions=extensions)
-    if active_cache is not None and target.is_dir():
-        active_cache.prune_missing(
-            {file_path.resolve() for file_path in discovered_files}, root=root
+    if files is None:
+        discovered_files = discover_code_files(target, extensions=extensions)
+        if active_cache is not None and target.is_dir():
+            active_cache.prune_missing(
+                {file_path.resolve() for file_path in discovered_files}, root=root
+            )
+    else:
+        # Incremental mode: the caller partitioned the file set and owns
+        # file-level cleanup, so analysis touches exactly these files.
+        discovered_files = sorted(
+            {Path(file_path) for file_path in files}, key=lambda item: item.as_posix()
         )
     cards: list[ConceptCard] = []
     staged: list[_StagedFile] = []

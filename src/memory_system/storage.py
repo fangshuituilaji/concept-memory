@@ -149,6 +149,35 @@ class ConceptStore:
 
     list_cards = all_cards
 
+    def cards_by_file(self, file_path: str) -> list[ConceptCard]:
+        """Cards anchored in one file, in stable ID order.
+
+        Incremental rescans reuse these cards verbatim when a file's content
+        has not changed, and match against them (to inherit card IDs) when it
+        has; see :mod:`memory_system.incremental`.
+        """
+
+        rows = self._require_connection().execute(
+            """
+            SELECT card_json FROM concept_cards
+            WHERE json_extract(card_json, '$.location.file_path') = ?
+            ORDER BY id
+            """,
+            (file_path,),
+        ).fetchall()
+        return [ConceptCard.from_dict(json.loads(row["card_json"])) for row in rows]
+
+    def stored_file_paths(self) -> set[str]:
+        """Root-relative paths that currently have at least one stored card."""
+
+        rows = self._require_connection().execute(
+            """
+            SELECT DISTINCT json_extract(card_json, '$.location.file_path') AS path
+            FROM concept_cards
+            """
+        ).fetchall()
+        return {row["path"] for row in rows if row["path"]}
+
     def search(self, query: str, *, limit: int = 20) -> list[ConceptSearchResult]:
         if not query.strip():
             return []

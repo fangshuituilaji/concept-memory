@@ -11,6 +11,7 @@ from .enrichment import (
     create_default_synthesizer,
 )
 from .models import ConceptCard, ConceptKind, SourceLocation
+from .incremental import FileStateRecord, FileStateStore, IncrementalScanResult, incremental_scan
 from .pipeline import analyze_path, cards_to_json, write_cards_json
 from .storage import ConceptSearchResult, ConceptStore
 from .cache import CacheKey, ConceptCache
@@ -31,6 +32,9 @@ __all__ = [
     "ConceptSynthesisConfig",
     "CacheKey",
     "ConceptCache",
+    "FileStateRecord",
+    "FileStateStore",
+    "IncrementalScanResult",
     "JsonlAuditRecorder",
     "SecurityBoundaryError",
     "SecurityDecision",
@@ -45,5 +49,6 @@ __all__ = [
     "analyze_path",
     "cards_to_json",
     "create_default_synthesizer",
+    "incremental_scan",
     "write_cards_json",
 ]

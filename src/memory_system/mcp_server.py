@@ -10,7 +10,7 @@ from typing import Any
 
 from .activation import SpreadingActivationSearch, record_usage
 from .cache import ConceptCache
-from .pipeline import analyze_path
+from .incremental import incremental_scan
 from .retrieval import QwenFlashRetriever, RetrievalConfig
 from .storage import ConceptStore
 from .web_server import (
@@ -125,18 +125,22 @@ def _scan_worker(root: str) -> None:
         def _progress(done: int, total: int, current_file: str) -> None:
             set_init_state("scanning", done=done, total=total, current_file=current_file)
 
-        cards = analyze_path(
+        assert _store is not None and _cache is not None
+        result = incremental_scan(
             root,
+            store=_store,
+            database_path=_database_path,
             cache=_cache,
-            security_policy=None,
             progress_callback=_progress,
+            store_lock=_lock,
         )
-        with _lock:
-            assert _store is not None and _cache is not None
-            _store.upsert_cards(cards)
-            pruned = _store.prune_not_in({card.id for card in cards})
         set_init_state(
-            "done", concept_count=len(cards), pruned=pruned, current_file=""
+            "done",
+            concept_count=len(result.cards),
+            pruned=result.pruned_cards,
+            current_file="",
+            changed_files=list(result.changed_files),
+            skipped_files=result.skipped_files,
         )
     except Exception as exc:  # the progress page is the user-visible surface
         set_init_state("error", message=str(exc))
@@ -373,8 +377,11 @@ def build_server() -> Any:
                 "Build the concept memory index for a project directory. "
                 "Run this once per project before searching: it reads every "
                 "source file once so that later code location needs no grep "
-                "and no whole-file reads. Returns immediately and opens a "
-                "live progress page."
+                "and no whole-file reads. Rescans are incremental and cheap: "
+                "only files whose content changed are re-read and re-"
+                "synthesized, so calling it again after edits is fast and "
+                "keeps accumulated card history. Returns immediately and "
+                "opens a live progress page."
             ),
             inputSchema={
                 "type": "object",
