@@ -7,13 +7,23 @@ are reused verbatim.  Files whose stat changed are re-read and hashed: when
 the digest still matches (git checkout/clone rewriting identical content) they
 are skipped too.  Only genuinely changed files go through the analysis
 pipeline, so rescan cost drops from O(repository) to O(changed files).
+
+Card IDs are content-addressed, so any edit would otherwise re-ID every card
+of that file and ``prune_not_in`` would destroy the real-usage edges those
+cards accumulated.  After re-analyzing a file, each new card is therefore
+matched against the file's previous cards (exact concept name, or a highly
+similar name that still cites at least one shared evidence symbol) and keeps
+its predecessor's ID, preserving those edges.  Only cards with no successor
+are pruned.  A vanished file whose digest reappears under a new name is
+treated as a rename, so its cards survive the move as well.
 """
 
 from __future__ import annotations
 
 import sqlite3
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Iterable
@@ -23,6 +33,10 @@ from .models import ConceptCard
 from .pipeline import analyze_path
 from .readers import discover_code_files
 from .storage import ConceptStore
+
+# A renamed draft counts as the same concept only above this name similarity
+# and only while still citing at least one identical evidence symbol.
+NAME_SIMILARITY_THRESHOLD = 0.75
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +57,7 @@ class IncrementalScanResult:
     changed_files: tuple[str, ...]
     skipped_files: int
     pruned_cards: int
+    renamed_files: tuple[str, ...]
 
 
 class FileStateStore:
@@ -134,6 +149,80 @@ def _source_digest(file_path: Path) -> str:
     return sha256(text.encode("utf-8")).hexdigest()
 
 
+def _evidence_symbols(card: ConceptCard) -> frozenset[str]:
+    raw = card.metadata.get("evidence_symbols", ())
+    return frozenset(str(item) for item in raw if str(item).strip())
+
+
+def _match_predecessors(
+    old_cards: list[ConceptCard], new_cards: list[ConceptCard]
+) -> list[tuple[int, ConceptCard]]:
+    """Pair new cards with same-file predecessors whose ID they should keep.
+
+    Matching stays within one file to avoid conflating same-named concepts
+    from different modules.  Exact-name matches win first (ties broken by
+    evidence overlap); remaining cards match only when the name is highly
+    similar AND at least one evidence symbol is shared, so a renamed draft
+    that moved to different symbols counts as a new concept.
+    """
+
+    pairs: list[tuple[int, ConceptCard]] = []
+    used_old: set[int] = set()
+    claimed_new: set[int] = set()
+
+    for index, new_card in enumerate(new_cards):
+        best: tuple[int, int, ConceptCard] | None = None
+        for old_index, old_card in enumerate(old_cards):
+            if old_index in used_old or old_card.name != new_card.name:
+                continue
+            overlap = len(_evidence_symbols(old_card) & _evidence_symbols(new_card))
+            if best is None or overlap > best[0]:
+                best = (overlap, old_index, old_card)
+        if best is not None:
+            pairs.append((index, best[2]))
+            used_old.add(best[1])
+            claimed_new.add(index)
+
+    for index, new_card in enumerate(new_cards):
+        if index in claimed_new:
+            continue
+        best: tuple[float, int, ConceptCard] | None = None
+        for old_index, old_card in enumerate(old_cards):
+            if old_index in used_old:
+                continue
+            ratio = SequenceMatcher(None, old_card.name, new_card.name).ratio()
+            if ratio < NAME_SIMILARITY_THRESHOLD:
+                continue
+            if not (_evidence_symbols(old_card) & _evidence_symbols(new_card)):
+                continue
+            if best is None or ratio > best[0]:
+                best = (ratio, old_index, old_card)
+        if best is not None:
+            pairs.append((index, best[2]))
+            used_old.add(best[1])
+
+    return pairs
+
+
+def _inherit_ids(
+    file_cards: list[ConceptCard], old_cards: list[ConceptCard]
+) -> None:
+    """Rewrite matched cards in place so they keep their predecessor's ID.
+
+    ``derived_from`` records the fresh content-addressed ID the new content
+    would have produced, keeping the ID lineage auditable even though the
+    stored ID is now inherited rather than content-derived.
+    """
+
+    for index, old_card in _match_predecessors(old_cards, file_cards):
+        fresh = file_cards[index]
+        file_cards[index] = replace(
+            fresh,
+            id=old_card.id,
+            metadata={**fresh.metadata, "derived_from": fresh.id},
+        )
+
+
 def incremental_scan(
     root: str | Path,
     *,
@@ -209,6 +298,34 @@ def incremental_scan(
         reused: list[ConceptCard] = []
         for rel in unchanged:
             reused.extend(store.cards_by_file(rel))
+
+        # Card-ID inheritance: match re-analyzed cards to their predecessors
+        # so real-usage edges survive content edits (and file renames).
+        new_by_file: dict[str, list[ConceptCard]] = {}
+        for card in new_cards:
+            new_by_file.setdefault(card.location.file_path, []).append(card)
+        changed_digests = {record.path: record.source_digest for record in changed_records}
+        disappeared = sorted(set(states) - set(rel_files))
+        used_origins: set[str] = set()
+        renamed: list[str] = []
+        for rel, file_cards in new_by_file.items():
+            old_cards = store.cards_by_file(rel)
+            if not old_cards:
+                # A vanished file whose content digest reappears here was
+                # renamed; its cards continue under the new path.
+                for origin in disappeared:
+                    if origin in used_origins:
+                        continue
+                    if states[origin].source_digest == changed_digests.get(rel):
+                        old_cards = store.cards_by_file(origin)
+                        used_origins.add(origin)
+                        renamed.append(f"{origin} -> {rel}")
+                        break
+            _inherit_ids(file_cards, old_cards)
+        # Inheritance replaced elements inside the per-file lists; rebuild the
+        # flat list so upsert and keep-set see the inherited IDs.
+        new_cards = [card for file_cards in new_by_file.values() for card in file_cards]
+
         store.upsert_cards(new_cards)
         keep_ids = {card.id for card in reused} | {card.id for card in new_cards}
         pruned = store.prune_not_in(keep_ids)
@@ -225,4 +342,5 @@ def incremental_scan(
         changed_files=tuple(record.path for record in changed_records),
         skipped_files=len(unchanged),
         pruned_cards=pruned,
+        renamed_files=tuple(renamed),
     )

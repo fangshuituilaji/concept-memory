@@ -186,6 +186,113 @@ class IncrementalScanTests(unittest.TestCase):
         self.assertEqual(synthesizer.calls, ["alpha.py"])
         self.assertEqual(len(result.cards), 2)
 
+    def test_small_edit_keeps_card_ids_and_usage_edges(self) -> None:
+        self._write_alpha()
+        result1, _ = self._scan({"alpha.py": ALPHA_TWO_CONCEPTS})
+        by_name = {card.name: card for card in result1.cards}
+        record_usage(str(self.db_path), [by_name["重试逻辑"].id, by_name["结果缓存"].id])
+        record_usage(str(self.db_path), [by_name["重试逻辑"].id, by_name["结果缓存"].id])
+        self.assertEqual(
+            self._edge_count(by_name["重试逻辑"].id, by_name["结果缓存"].id), 2
+        )
+
+        alpha = self._write_alpha(
+            "# just a comment\n" + ALPHA_SOURCE.replace("return n + 1", "return n + 1  # tuned")
+        )
+        self._touch(alpha)
+        result2, second = self._scan({"alpha.py": ALPHA_TWO_CONCEPTS})
+        self.assertEqual(second.calls, ["alpha.py"])
+        ids_before = {card.name: card.id for card in result1.cards}
+        ids_after = {card.name: card.id for card in result2.cards}
+        self.assertEqual(ids_before, ids_after)
+
+        edge = self._edge_count(by_name["重试逻辑"].id, by_name["结果缓存"].id)
+        self.assertEqual(edge, 2)
+
+        retry_card = self.store.get(by_name["重试逻辑"].id)
+        assert retry_card is not None
+        # derived_from records the fresh content-addressed ID the edited
+        # content would have produced; the stored ID itself is inherited.
+        self.assertRegex(retry_card.metadata["derived_from"], r"^[0-9a-f]{24}$")
+        self.assertNotEqual(retry_card.metadata["derived_from"], retry_card.id)
+        self.assertNotEqual(retry_card.source_digest, by_name["重试逻辑"].source_digest)
+
+    def test_removed_concept_is_pruned_with_its_edges(self) -> None:
+        self._write_alpha()
+        result1, _ = self._scan({"alpha.py": ALPHA_TWO_CONCEPTS})
+        by_name = {card.name: card for card in result1.cards}
+        record_usage(str(self.db_path), [by_name["重试逻辑"].id, by_name["结果缓存"].id])
+
+        alpha = self._write_alpha(
+            "class alpha:\n    def retry(self, n):\n        return n + 1\n"
+        )
+        self._touch(alpha)
+        result2, _ = self._scan(
+            {"alpha.py": [draft for draft in ALPHA_TWO_CONCEPTS if draft["name"] != "结果缓存"]}
+        )
+        self.assertEqual(len(result2.cards), 1)
+        self.assertEqual(result2.pruned_cards, 1)
+        self.assertEqual(result2.cards[0].id, by_name["重试逻辑"].id)
+        self.assertIsNone(self.store.get(by_name["结果缓存"].id))
+        self.assertEqual(self._edge_counts(), {})
+
+    def test_renamed_file_keeps_card_ids_and_edges(self) -> None:
+        self._write_alpha()
+        result1, _ = self._scan({"alpha.py": ALPHA_TWO_CONCEPTS})
+        by_name = {card.name: card for card in result1.cards}
+        record_usage(str(self.db_path), [by_name["重试逻辑"].id, by_name["结果缓存"].id])
+
+        gamma = self.root / "gamma.py"
+        (self.root / "alpha.py").replace(gamma)
+        result2, second = self._scan({"gamma.py": ALPHA_TWO_CONCEPTS})
+        self.assertEqual(second.calls, ["gamma.py"])
+        self.assertEqual(result2.renamed_files, ("alpha.py -> gamma.py",))
+        self.assertEqual(
+            {card.id for card in result2.cards}, {card.id for card in result1.cards}
+        )
+        self.assertTrue(all(card.location.file_path == "gamma.py" for card in result2.cards))
+        self.assertEqual(len(self._edge_counts()), 1)
+        states = FileStateStore(str(self.db_path)).load()
+        self.assertIn("gamma.py", states)
+        self.assertNotIn("alpha.py", states)
+
+    def test_similar_rename_with_shared_evidence_inherits_id(self) -> None:
+        self._write_alpha()
+        result1, _ = self._scan({"alpha.py": ALPHA_TWO_CONCEPTS})
+        retry_id = next(card.id for card in result1.cards if card.name == "重试逻辑")
+
+        alpha = self._write_alpha(ALPHA_SOURCE.replace("return n + 1", "return n + 2"))
+        self._touch(alpha)
+        result2, _ = self._scan(
+            {
+                "alpha.py": [
+                    {"name": "重试逻辑处理", "definition": "对失败请求按退避策略重试。", "evidence": ("alpha.retry",)},
+                    ALPHA_TWO_CONCEPTS[1],
+                ]
+            }
+        )
+        renamed = next(card for card in result2.cards if card.name == "重试逻辑处理")
+        self.assertEqual(renamed.id, retry_id)
+
+    def test_similar_name_without_shared_evidence_gets_new_id(self) -> None:
+        self._write_alpha()
+        result1, _ = self._scan({"alpha.py": ALPHA_TWO_CONCEPTS})
+        retry_id = next(card.id for card in result1.cards if card.name == "重试逻辑")
+
+        alpha = self._write_alpha(ALPHA_SOURCE.replace("return n + 1", "return n + 2"))
+        self._touch(alpha)
+        result2, _ = self._scan(
+            {
+                "alpha.py": [
+                    {"name": "重试逻辑处理", "definition": "另一个概念。", "evidence": ("alpha.cache",)},
+                    ALPHA_TWO_CONCEPTS[1],
+                ]
+            }
+        )
+        renamed = next(card for card in result2.cards if card.name == "重试逻辑处理")
+        self.assertNotEqual(renamed.id, retry_id)
+        self.assertIsNone(self.store.get(retry_id))
+
     def _edge_counts(self) -> dict[tuple[str, str], int]:
         connection = sqlite3.connect(str(self.db_path))
         try:
@@ -195,6 +302,9 @@ class IncrementalScanTests(unittest.TestCase):
         finally:
             connection.close()
         return {(source, target): count for source, target, count in rows}
+
+    def _edge_count(self, first: str, second: str) -> int:
+        return self._edge_counts().get(tuple(sorted((first, second))), 0)
 
 
 if __name__ == "__main__":
