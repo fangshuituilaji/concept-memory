@@ -69,11 +69,19 @@ class ConnectionStateTests(unittest.TestCase):
 
     def test_mcp_tools_mark_agent_seen_even_when_uninitialized(self) -> None:
         # the call itself fails, but the agent contact still lights the button
-        for caller in (mcp.search_concepts, mcp.get_card):
+        callers = (
+            lambda: mcp.search_concepts("whatever"),
+            lambda: mcp.search_concepts(card_ids="whatever"),
+        )
+        for caller in callers:
             _reset_web_state()
             with self.assertRaises(RuntimeError):
-                caller("whatever")
+                caller()
             self.assertTrue(web.get_connection_state()["connected"])
+        # an invalid call never reaches the store but still lights the button
+        _reset_web_state()
+        self.assertIn("error", mcp.search_concepts())
+        self.assertTrue(web.get_connection_state()["connected"])
 
 
 class SearchEventTests(unittest.TestCase):

@@ -58,8 +58,23 @@ def _get_store() -> ConceptStore:
     return _store
 
 
+def _definition_preview(definition: str, max_chars: int = 120) -> str:
+    """First meaningful line of a definition, truncated for relevance judgment."""
+
+    for line in definition.splitlines():
+        text = line.strip()
+        if text:
+            return text[:max_chars] + ("…" if len(text) > max_chars else "")
+    return ""
+
+
 def _card_to_summary(card: Any) -> dict[str, Any]:
-    """Compact card representation for MCP tool output."""
+    """Thin catalog entry: enough to pick a card, not enough to read it.
+
+    Full cards (complete definition plus ``source_excerpt``) are only
+    returned by card mode, so actually reading several cards together stays
+    a deliberate act that feeds the usage graph.
+    """
 
     locations: list[dict[str, Any]] = []
     raw = card.metadata.get("evidence_locations", ())
@@ -87,13 +102,19 @@ def _card_to_summary(card: Any) -> dict[str, Any]:
     return {
         "card_id": card.id,
         "name": card.name,
-        "definition": card.definition,
+        "definition_preview": _definition_preview(card.definition),
         "file_path": card.location.file_path,
-        "symbols": list(symbols),
-        "locations": locations,
-        "source_excerpt": card.source_excerpt,
-        "validation_status": card.metadata.get("validation_status"),
+        "symbols": list(symbols[:5]),
+        "locations": locations[:3],
     }
+
+
+def _provided(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip() != ""
+    return bool(value)
 
 
 def _scan_worker(root: str) -> None:
@@ -182,19 +203,55 @@ def _get_retriever() -> Any:
     return _retriever
 
 
-def search_concepts(query: str, limit: int = 10) -> dict[str, Any]:
-    """Search stored concept cards, ordered as a task-oriented card sequence.
+_NEXT_STEP = (
+    "call search_concepts again with card_ids=[...] (several at once) to "
+    "read the full cards: complete definition plus line-indexed source "
+    "excerpts"
+)
 
-    Qwen-Flash reads the full catalog of card names and definitions and
-    returns the relevant card IDs; complete cards are then loaded from the
-    store by ID.  There is no lexical recall step that could drop a relevant
-    card before the model sees it.  When the model is unreachable the search
-    fails after retries instead of silently degrading to offline results.
-    Cards reached over the relation graph by spreading activation follow
-    under ``related`` with the propagation path.
+
+def search_concepts(
+    query: str | None = None,
+    limit: int = 10,
+    card_ids: str | list[str] | None = None,
+) -> dict[str, Any]:
+    """One tool, two steps: locate cards by query, then read them by ID.
+
+    Query mode (``query``): Qwen-Flash reads the full catalog of card names
+    and definitions and returns the relevant card IDs; complete cards are
+    then loaded from the store by ID.  There is no lexical recall step that
+    could drop a relevant card before the model sees it, and when the model
+    is unreachable the search fails after retries instead of silently
+    degrading.  Results are thin catalog entries (card_id, name, one-line
+    definition preview, file and line ranges) - enough to choose cards, not
+    to read them.  Cards reached over the relation graph by spreading
+    activation follow under ``related`` with the propagation path.
+
+    Card mode (``card_ids``): the model's way of reading code through
+    memory.  One call may fetch several cards; each fetched pair then gets
+    a co-usage edge incremented, so the concept web reflects what real
+    sessions used together and future searches spread activation over
+    those links.
     """
 
     mark_agent_seen()
+    has_query = _provided(query)
+    has_cards = _provided(card_ids)
+    if has_query == has_cards:
+        return {
+            "error": (
+                "pass exactly one of query (locate cards) or card_ids "
+                "(read full cards)"
+            )
+        }
+    if has_cards:
+        return _fetch_cards(card_ids)  # type: ignore[arg-type]
+    return _search_by_query(query if isinstance(query, str) else str(query), limit)
+
+
+def _search_by_query(query: str, limit: int) -> dict[str, Any]:
+    """Query mode: online ranking plus spreading-activation neighbours."""
+
     with _lock:
         store = _get_store()
         capped = max(1, min(limit, 50))
@@ -206,6 +263,7 @@ def search_concepts(query: str, limit: int = 10) -> dict[str, Any]:
         related = _related_concepts(query, results, capped)
         if related:
             payload["related"] = related
+        payload["next_step"] = _NEXT_STEP
         record_search_event(
             query,
             [result.card.id for result in results],
@@ -246,10 +304,12 @@ def _related_concepts(query: str, results: list, limit: int) -> list[dict[str, A
         card_id = str(item.card.get("id", ""))
         if not card_id or card_id in direct_ids or item.hop == 0:
             continue
+        location = item.card.get("location") or {}
         related.append(
             {
                 "card_id": card_id,
                 "name": item.card.get("name", ""),
+                "file_path": location.get("file_path", ""),
                 "activation": item.activation,
                 "hop": item.hop,
                 "via": " → ".join(item.path),
@@ -260,17 +320,9 @@ def _related_concepts(query: str, results: list, limit: int) -> list[dict[str, A
     return related
 
 
-def get_card(card_ids: str | list[str]) -> dict[str, Any]:
-    """Return full concept cards by ID; multi-card fetches record real usage.
+def _fetch_cards(card_ids: str | list[str]) -> dict[str, Any]:
+    """Card mode: full cards by ID; multi-card fetches record real usage."""
 
-    ``get_card`` is the model's way of reading code through memory: the
-    returned cards (concept plus line indexes) are what it consumes.  One
-    call may fetch several cards; each fetched pair then gets a co-usage
-    edge incremented, so the concept web reflects what real sessions used
-    together and future searches spread activation over those links.
-    """
-
-    mark_agent_seen()
     with _lock:
         store = _get_store()
         if isinstance(card_ids, str):
@@ -334,45 +386,32 @@ def build_server() -> Any:
             name="search_concepts",
             description=(
                 "PREFERRED over Grep/ripgrep when you need to find where "
-                "code lives. Give a natural-language concept or keyword "
-                "(e.g. '使用边', 'retry logic'); it returns an ordered "
-                "sequence of concept cards - direct matches first, then "
-                "concepts historically used together - each with file, "
-                "symbols and exact line numbers, using far less context "
-                "than search results or whole-file reads. Follow up with "
-                "get_card on the cards you need."
+                "code lives; one tool, two steps. Step 1: pass query "
+                "(natural-language concept or keyword, e.g. '使用边', "
+                "'retry logic') to list matching cards - card_id, name, "
+                "one-line definition preview, file and exact line numbers "
+                "- followed by related cards reached over the real-usage "
+                "graph. Step 2: pass card_ids (several together) to read "
+                "the full cards - complete definition plus line-indexed "
+                "source excerpts, tens of lines instead of a whole file. "
+                "Multi-card fetches record co-usage edges that improve "
+                "future searches. Use Read only for the few extra lines "
+                "the cards do not already cover."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
+                    "query": {
+                        "type": "string",
+                        "description": "Natural-language concept or keyword to locate cards.",
+                    },
                     "limit": {"type": "integer", "default": 10},
-                },
-                "required": ["query"],
-            },
-        ),
-        mcp_types.Tool(
-            name="get_card",
-            description=(
-                "PREFERRED over Read for locating code. Read one or more "
-                "concept cards by ID: each returns the concept definition, "
-                "evidence symbols and exact line-indexed source excerpts, "
-                "so you usually read tens of lines instead of a whole "
-                "file. Fetching several cards in one call also records "
-                "that they were used together, which improves future "
-                "searches. Use Read only for the few extra lines the "
-                "cards do not already cover."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
                     "card_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "One or more card IDs to fetch together.",
+                        "description": "Card IDs from a previous query, fetched together in full.",
                     },
                 },
-                "required": ["card_ids"],
             },
         ),
     ]
@@ -389,16 +428,15 @@ def build_server() -> Any:
         if name == "scan_codebase":
             result = await asyncio.to_thread(scan_codebase, arguments.get("path", ""))
         elif name == "search_concepts":
-            result = await asyncio.to_thread(
-                search_concepts,
-                arguments.get("query", ""),
-                arguments.get("limit", 10),
-            )
-        elif name == "get_card":
             card_ids = arguments.get("card_ids")
             if card_ids is None:
-                card_ids = arguments.get("card_id", "")
-            result = await asyncio.to_thread(get_card, card_ids)
+                card_ids = arguments.get("card_id")
+            result = await asyncio.to_thread(
+                search_concepts,
+                arguments.get("query"),
+                arguments.get("limit", 10),
+                card_ids,
+            )
         else:
             raise ValueError(f"unknown tool: {name}")
         return mcp_types.CallToolResult(

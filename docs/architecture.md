@@ -19,7 +19,7 @@ source file
   -> matched cards + explanations + short source evidence
 ```
 
-当前系统已经实现源码读取、源码事实提取、文件级概念生成、证据绑定、JSON 序列化、SQLite FTS 检索、缓存增量更新和敏感文件审计，并通过 MCP 工具（`scan_codebase` / `search_concepts` / `get_card`）向 Coding Agent 暴露。
+当前系统已经实现源码读取、源码事实提取、文件级概念生成、证据绑定、JSON 序列化、SQLite FTS 检索、缓存增量更新和敏感文件审计，并通过 MCP 工具（`scan_codebase` / `search_concepts`，后者 query 检索 / card_ids 取卡双模式）向 Coding Agent 暴露。
 
 ## 3. 概念卡片和证据契约
 

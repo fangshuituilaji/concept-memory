@@ -1,6 +1,6 @@
 # Concept Memory — Coding Agent 外接记忆服务
 
-本项目是一个**供 Coding Agent 使用的外接记忆服务**：扫描工作目录生成概念记忆，当 agent 需要定位代码时，向模型返回带代码行索引的概念卡片，代替低精度的全文检索和大量整文件阅读。产品定义见 [`产品设计问文档.md`](产品设计问文档.md)。
+本项目是一个**供 Coding Agent 使用的外接记忆服务**：扫描工作目录生成概念记忆，当 agent 需要定位代码时，向模型返回带代码行索引的概念卡片，代替低精度的全文检索和大量整文件阅读。产品定义见 [`产品设计文档.md`](产品设计文档.md)。
 
 它要解决 Coding Agent 的两个现实痛点：
 
@@ -9,7 +9,7 @@
 
 ## 当前实现与产品差距
 
-已具备：`memory-mcp`（`scan_codebase` / `search_concepts` / `get_card` 三个工具）、概念生成与证据绑定（含文件、符号、行号）、SQLite FTS 存储、`memory-web` 概念网络页面（初始化扫描、进度显示、灰节点、点击看卡片）。`scan_codebase` 立即返回并在后台扫描：自动启动 `memory-web` 并打开进度页（逐文件实时进度），文件级 Qwen 调用走线程池并行（默认 6 并发，120 秒超时，失败自动重试 3 次），扫描完成后清理已删除/改名文件的孤儿卡片。概念连线**只来自真实使用**：`get_card` 一次取走多张卡片时，卡片两两之间记一条共现边（计数累加），不调用模型推断语义关系；`search_concepts` 在线调用 qwen-flash 完成检索：**全部概念卡片的「ID+概念名+定义」目录直接送入模型上下文**，由它挑选相关卡片并按相关性排序、只返回卡片 ID，本地再按 ID 取回完整卡片；**没有本地关键词粗筛环节**，卡片目录过大时按批送模型初选、合并后再终排；检索失败自动重试 3 次，重试仍失败则明确报错，**绝不静默回退到纯离线检索**。`search_concepts` 按"重排后的直接命中在前、沿真实使用边扩散的相关卡片在后"输出有序卡片序列，关联卡片带 `hop` 跳数和 `via` 传播路径。概念网络页面渲染同文件淡色连线与真实使用连线（越粗共现次数越多，有上限），并已实现红/绿连接状态按钮（coding agent 最近调用过 MCP 工具时为绿色，超过 5 分钟无调用转红，网页自己触发的扫描不算）与检索命中可视化（直接命中深蓝、扩散相关浅蓝，命中集合之间的连线同时点亮）。当前架构图见 [`docs/architecture-diagram.html`](docs/architecture-diagram.html)。
+已具备：`memory-mcp`（`scan_codebase` / `search_concepts` 两个工具，后者双模式：query 检索 / card_ids 取卡）、概念生成与证据绑定（含文件、符号、行号）、SQLite FTS 存储、`memory-web` 概念网络页面（初始化扫描、进度显示、灰节点、点击看卡片）。`scan_codebase` 立即返回并在后台扫描：自动启动 `memory-web` 并打开进度页（逐文件实时进度），文件级 Qwen 调用走线程池并行（默认 6 并发，120 秒超时，失败自动重试 3 次），扫描完成后清理已删除/改名文件的孤儿卡片。概念连线**只来自真实使用**：`search_concepts` 取卡（card_ids 模式）一次取走多张卡片时，卡片两两之间记一条共现边（计数累加），不调用模型推断语义关系；`search_concepts` 在线调用 qwen-flash 完成检索：**全部概念卡片的「ID+概念名+定义」目录直接送入模型上下文**，由它挑选相关卡片并按相关性排序、只返回卡片 ID，本地再按 ID 取回完整卡片；**没有本地关键词粗筛环节**，卡片目录过大时按批送模型初选、合并后再终排；检索失败自动重试 3 次，重试仍失败则明确报错，**绝不静默回退到纯离线检索**。`search_concepts` query 模式按"重排后的直接命中在前、沿真实使用边扩散的相关卡片在后"输出瘦身目录（card_id、概念名、文件行号、一行定义预览，不含源码摘录；关联卡片带 `hop` 跳数、`via` 传播路径和 `file_path`）；card_ids 模式一次取回多张完整卡片（定义全文+源码摘录），并两两累加真实使用边。概念网络页面渲染同文件淡色连线与真实使用连线（越粗共现次数越多，有上限），并已实现红/绿连接状态按钮（coding agent 最近调用过 MCP 工具时为绿色，超过 5 分钟无调用转红，网页自己触发的扫描不算）与检索命中可视化（直接命中深蓝、扩散相关浅蓝，命中集合之间的连线同时点亮）。当前架构图见 [`docs/architecture-diagram.html`](docs/architecture-diagram.html)。
 
 距产品完成还差：
 
@@ -45,7 +45,7 @@ PYTHONPATH=src python3 -m memory_system.cli path/to/project \
 
 ### 接入 ZCode
 
-工作区配置 `.zcode/config.json` 已注册 `concept-memory` MCP 服务（stdio，`python -m memory_system.mcp_server`）。新开的 ZCode 会话会自动连接，工具为 `scan_codebase` / `search_concepts` / `get_card`。在线概念生成**和检索**都要求服务进程环境变量中存在 `DASHSCOPE_API_KEY`（MCP 服务不会读取 `.env`）；扫描未设置时使用离线回退，但 `search_concepts` 始终要求在线模型，未设置或模型不可达时报错。
+工作区配置 `.zcode/config.json` 已注册 `concept-memory` MCP 服务（stdio，`python -m memory_system.mcp_server`）。新开的 ZCode 会话会自动连接，工具为 `scan_codebase` / `search_concepts`（query 检索 / card_ids 取卡）。在线概念生成**和检索**都要求服务进程环境变量中存在 `DASHSCOPE_API_KEY`（MCP 服务不会读取 `.env`）；扫描未设置时使用离线回退，但 `search_concepts` 始终要求在线模型，未设置或模型不可达时报错。
 
 Python API 示例：
 
@@ -79,10 +79,10 @@ with ConceptStore("concepts.sqlite") as store:
 
 ## 文档入口
 
-- [产品设计问文档](产品设计问文档.md)
+- [产品设计文档](产品设计文档.md)
 - [架构说明](docs/architecture.md)
 - [架构图（交互式）](docs/architecture-diagram.html)
 
 ## 状态
 
-当前已实现源码事实提取、文件级概念生成、证据绑定（文件/符号/行号）、JSON/SQLite 存储、缓存增量更新、孤儿卡片清理、敏感文件审计、MCP 三个工具、概念网络页面和基于真实使用边的扩散激活检索。当前状态是"产品骨架已通，『真实使用建边』机制已通过本会话真实 MCP 调用与页面视觉验证；按『当前实现与产品差距』一节补齐页面连接状态与检索高亮后，即进入真实 coding agent 会话验证"。
+当前已实现源码事实提取、文件级概念生成、证据绑定（文件/符号/行号）、JSON/SQLite 存储、缓存增量更新、孤儿卡片清理、敏感文件审计、MCP 两个工具、概念网络页面和基于真实使用边的扩散激活检索。当前状态是"产品骨架已通，『真实使用建边』机制已通过本会话真实 MCP 调用与页面视觉验证；按『当前实现与产品差距』一节补齐页面连接状态与检索高亮后，即进入真实 coding agent 会话验证"。

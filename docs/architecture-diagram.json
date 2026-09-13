@@ -46,7 +46,7 @@
           "activation",
           "web"
         ],
-        "note": "get_card 共同取卡累积使用边，激活扩散喂给下一次检索；网页实时呈现概念网络。"
+        "note": "search_concepts 取卡（card_ids）共同取卡累积使用边，激活扩散喂给下一次检索；网页实时呈现概念网络。"
       }
     ]
   },
@@ -140,7 +140,7 @@
       "type": "backend",
       "label": "memory-mcp",
       "sublabel": "MCP 服务",
-      "tag": "scan / search / get_card",
+      "tag": "scan / search",
       "pos": [
         300,
         300
@@ -374,7 +374,7 @@
       "dot": "emerald",
       "title": "记忆与安全",
       "items": [
-        "真实使用连线：多卡 get_card 两两记边，共现越多越粗",
+        "真实使用连线：多卡取卡（card_ids 模式）两两记边，共现越多越粗",
         "API key 仅从环境变量读取；检索不回退纯离线",
         "敏感文件本地审计，白名单放行才送模型"
       ]

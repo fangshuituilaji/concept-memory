@@ -1,7 +1,7 @@
 """Tests for real-usage edges and spreading activation retrieval.
 
-Edges are only created by real usage (multi-card ``get_card`` fetches);
-a scan never invents edges.
+Edges are only created by real usage (multi-card card-mode ``search_concepts``
+fetches); a scan never invents edges.
 """
 
 from __future__ import annotations
@@ -175,7 +175,7 @@ class McpUsageWiringTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_multi_card_fetch_records_usage_and_feeds_search(self) -> None:
-        payload = mcp.get_card([self.cards[0].id, self.cards[1].id])
+        payload = mcp.search_concepts(card_ids=[self.cards[0].id, self.cards[1].id])
         self.assertEqual(
             [card["name"] for card in payload["cards"]], ["语法解析", "结果组织"]
         )
@@ -184,32 +184,65 @@ class McpUsageWiringTests(unittest.TestCase):
             {tuple(sorted((self.cards[0].id, self.cards[1].id))): 1},
         )
 
-        mcp.get_card([self.cards[1].id, self.cards[2].id])
+        mcp.search_concepts(card_ids=[self.cards[1].id, self.cards[2].id])
         search = mcp.search_concepts("语法解析")
         self.assertEqual([r["name"] for r in search["results"]], ["语法解析"])
         related = search["related"]
         self.assertEqual([item["name"] for item in related], ["结果组织", "日志输出"])
+        self.assertEqual(related[0]["file_path"], "a.py")
         self.assertEqual(related[0]["hop"], 1)
         self.assertEqual(related[0]["via"], "语法解析 → 结果组织")
         self.assertEqual(related[1]["hop"], 2)
 
     def test_single_card_fetch_records_nothing(self) -> None:
-        payload = mcp.get_card(self.cards[0].id)
+        payload = mcp.search_concepts(card_ids=self.cards[0].id)
         self.assertEqual(payload["cards"][0]["name"], "语法解析")
         self.assertEqual(_usage_counts(self.database), {})
         search = mcp.search_concepts("语法解析")
         self.assertNotIn("related", search)
 
     def test_unknown_cards_reported_without_usage_writes(self) -> None:
-        payload = mcp.get_card(["ghost-a", "ghost-b"])
+        payload = mcp.search_concepts(card_ids=["ghost-a", "ghost-b"])
         self.assertIn("error", payload)
         self.assertEqual(_usage_counts(self.database), {})
 
     def test_partial_hit_returns_found_cards_and_marks_missing(self) -> None:
-        payload = mcp.get_card([self.cards[0].id, "ghost"])
+        payload = mcp.search_concepts(card_ids=[self.cards[0].id, "ghost"])
         self.assertEqual(len(payload["cards"]), 1)
         self.assertEqual(payload["not_found"], ["ghost"])
         self.assertEqual(_usage_counts(self.database), {})
+
+    def test_json_string_card_ids_are_accepted(self) -> None:
+        import json
+
+        payload = mcp.search_concepts(
+            card_ids=json.dumps([self.cards[0].id, self.cards[1].id])
+        )
+        self.assertEqual(len(payload["cards"]), 2)
+        self.assertEqual(len(_usage_counts(self.database)), 1)
+
+    def test_query_and_card_ids_are_mutually_exclusive(self) -> None:
+        self.assertIn("error", mcp.search_concepts())
+        self.assertIn(
+            "error", mcp.search_concepts(query="语法解析", card_ids=[self.cards[0].id])
+        )
+        self.assertEqual(_usage_counts(self.database), {})
+
+    def test_query_results_stay_thin(self) -> None:
+        long_card = _card(
+            "长定义概念", "首行定义" + "很" * 200 + "。\n第二行不应该出现。"
+        )
+        mcp._store.upsert_cards([long_card])
+        search = mcp.search_concepts("长定义概念")
+        self.assertEqual(len(search["results"]), 1)
+        summary = search["results"][0]
+        self.assertNotIn("source_excerpt", summary)
+        self.assertNotIn("definition", summary)
+        preview = summary["definition_preview"]
+        self.assertTrue(preview.startswith("首行定义"))
+        self.assertLessEqual(len(preview), 121)
+        self.assertTrue(preview.endswith("…"))
+        self.assertIn("card_ids", search["next_step"])
 
 
 if __name__ == "__main__":

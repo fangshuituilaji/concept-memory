@@ -1,10 +1,11 @@
 """Spreading activation retrieval over the real-usage concept graph.
 
 Edges are never invented by a model.  The only edge source is recorded
-usage: every ``get_card`` call that fetches several cards at once adds one
-co-usage link between each fetched pair, and the link's weight is how many
-times it has happened.  Retrieval spreads activation over those links so
-future searches surface what past sessions actually used together.
+usage: every ``search_concepts`` card-mode call that fetches several cards
+at once adds one co-usage link between each fetched pair, and the link's
+weight is how many times it has happened.  Retrieval spreads activation
+over those links so future searches surface what past sessions actually
+used together.
 """
 
 from __future__ import annotations
@@ -155,9 +156,10 @@ class SpreadingActivationSearch:
 def record_usage(database_path: str, card_ids: list[str]) -> None:
     """Persist one real-usage event: the co-use of several cards together.
 
-    Called on every multi-card ``get_card`` fetch.  Each unordered pair in
-    the fetch gets its counter incremented by one; repeated co-use makes
-    the edge heavier.  Unknown or duplicate IDs are ignored.
+    Called on every multi-card ``search_concepts`` fetch (card mode).  Each
+    unordered pair in the fetch gets its counter incremented by one;
+    repeated co-use makes the edge heavier.  Unknown or duplicate IDs are
+    ignored.
     """
 
     unique_ids = list(dict.fromkeys(card_id for card_id in card_ids if card_id))
