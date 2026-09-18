@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import webbrowser
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,13 @@ _web_server: Any | None = None
 _web_url: str = ""
 _scan_thread: threading.Thread | None = None
 _retriever: Any | None = None
+
+# Readiness gate: how long search_concepts waits for an in-flight scan.
+_SCAN_WAIT_TIMEOUT_SECONDS = 1800.0
+_SCAN_NOTE = (
+    "background scan in progress; search_concepts automatically waits for "
+    "it to complete - no need to sleep or poll manually"
+)
 
 
 def _init(project_root: str) -> None:
@@ -151,10 +159,10 @@ def scan_codebase(
 ) -> dict[str, Any]:
     """Start a background index build and open the concept network progress page.
 
-    Returns immediately with the page URL; ``search_concepts`` reads whatever
-    is already committed while the scan continues.  ``from_agent`` is False
-    only when the scan was triggered from the web page itself, which must
-    not light up the agent-connection button.
+    Returns immediately with the page URL; ``search_concepts`` waits for
+    the scan to finish instead of reading a half-built index.  ``from_agent``
+    is False only when the scan was triggered from the web page itself,
+    which must not light up the agent-connection button.
     """
 
     global _scan_thread, _web_server, _web_url
@@ -168,6 +176,7 @@ def scan_codebase(
                 "project_root": _project_root,
                 "progress": get_init_state(),
                 "url": _web_url,
+                "note": _SCAN_NOTE,
             }
         _init(root)
         assert _store is not None and _cache is not None
@@ -187,6 +196,7 @@ def scan_codebase(
         "project_root": root,
         "url": _web_url,
         "database": _database_path,
+        "note": _SCAN_NOTE,
     }
 
 
@@ -196,6 +206,31 @@ def _active_scan() -> dict[str, Any] | None:
     if _scan_thread is not None and _scan_thread.is_alive():
         return {"status": "scanning", "progress": get_init_state(), "url": _web_url}
     return None
+
+
+def _wait_for_scan(timeout: float | None = None) -> None:
+    """Readiness gate: block until any in-flight background scan finishes.
+
+    Searching while a scan runs would answer from a half-built index, so
+    the tool makes the caller wait instead of racing the scan worker.
+    """
+
+    if timeout is None:
+        timeout = _SCAN_WAIT_TIMEOUT_SECONDS
+    deadline = time.monotonic() + timeout
+    while True:
+        with _lifecycle_lock:
+            thread = _scan_thread
+        if thread is None or not thread.is_alive():
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(
+                "concept index is still building; retry search_concepts "
+                "later. progress: "
+                + json.dumps(get_init_state(), ensure_ascii=False)
+            )
+        thread.join(timeout=min(remaining, 1.0))
 
 
 def _get_retriever() -> Any:
@@ -248,6 +283,10 @@ def search_concepts(
                 "(read full cards)"
             )
         }
+    try:
+        _wait_for_scan()
+    except RuntimeError as exc:
+        return {"error": str(exc)}
     if has_cards:
         return _fetch_cards(card_ids)  # type: ignore[arg-type]
     return _search_by_query(query if isinstance(query, str) else str(query), limit)
@@ -258,6 +297,14 @@ def _search_by_query(query: str, limit: int) -> dict[str, Any]:
 
     with _lock:
         store = _get_store()
+        if not store.all_cards():
+            return {
+                "error": (
+                    "concept index is empty for this project; run "
+                    "scan_codebase once and wait for the scan to finish "
+                    "before searching"
+                )
+            }
         capped = max(1, min(limit, 50))
         results = _get_retriever().search(store, query, capped)
         payload: dict[str, Any] = {
@@ -381,7 +428,9 @@ def build_server() -> Any:
                 "only files whose content changed are re-read and re-"
                 "synthesized, so calling it again after edits is fast and "
                 "keeps accumulated card history. Returns immediately and "
-                "opens a live progress page."
+                "opens a live progress page; search_concepts automatically "
+                "waits for an in-progress scan, so you can call it right "
+                "away without sleeping or polling."
             ),
             inputSchema={
                 "type": "object",
@@ -402,7 +451,9 @@ def build_server() -> Any:
                 "the full cards - complete definition plus line-indexed "
                 "source excerpts, tens of lines instead of a whole file. "
                 "Multi-card fetches record co-usage edges that improve "
-                "future searches. Use Read only for the few extra lines "
+                "future searches. If a scan is still running, the call "
+                "waits for it to finish instead of searching a half-built "
+                "index. Use Read only for the few extra lines "
                 "the cards do not already cover."
             ),
             inputSchema={
