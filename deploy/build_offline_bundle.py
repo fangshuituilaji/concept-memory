@@ -9,11 +9,16 @@
     python deploy\\build_offline_bundle.py --wheels D:\\wheels
 
 参数：--src 默认脚本所在目录，脚本会自动定位 memory_system\\；
-      --out 默认 <项目根>\\deploy\\dist；--runtime 默认打包机的 Python311 安装目录；
+      --out 默认 <项目根>\\deploy\\dist；
+      --runtime 打包用的 Python 3.11 安装目录；不传则先读环境变量
+                CONCEPT_MEMORY_BUILD_PYTHON，再自动探测（py 启动器 / PATH / 常见安装位置）；
+      --version 版本号；不传则取源码 __version__，并与 pyproject.toml 校验一致；
       --wheels 给了就完全不联网，直接用该目录的 .whl 离线装依赖；
       --keep-work 保留 _work 中间目录便于排查。
 
-产物：<out>\\concept-memory-offline-win64.zip，解压后顶层只有 concept-memory\\ 一个文件夹。
+产物：<out>\\concept-memory-offline-win64-v<版本>.zip，解压后顶层只有 concept-memory\\ 一个文件夹。
+      zip 文件名带版本，但包内顶层文件夹名固定为 concept-memory：用户升级时覆盖同名目录即可，
+      客户端配置里的路径一个字都不用改。
 脚本幂等：每次重跑先删掉 --out\\_work，不往用户家目录写任何东西。
 
 设计约束（已实测，改动前请先读）：
@@ -51,9 +56,16 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 PACKAGE_DIR_NAME = "concept-memory"
-ZIP_NAME = "concept-memory-offline-win64.zip"
+ZIP_NAME_TEMPLATE = "concept-memory-offline-win64-v{version}.zip"
 
-DEFAULT_RUNTIME = r"C:\Users\21526\AppData\Local\Programs\Python\Python311"
+# 打包机运行时不在仓库里写死个人路径（公开仓库里那就是别人的报错来源）。
+# 优先级：--runtime > 本环境变量 > 自动探测。
+RUNTIME_ENV_VAR = "CONCEPT_MEMORY_BUILD_PYTHON"
+RUNTIME_FALLBACK_DIRS = (
+    r"C:\Program Files\Python311",
+    r"C:\Program Files (x86)\Python311",
+)
+REQUIRED_PYTHON_VERSION = "3.11"
 
 # 要装进包内 site-packages 的依赖清单（按任务规定，顺序即安装顺序）
 REQUIREMENTS = [
@@ -133,28 +145,28 @@ DASHSCOPE_API_KEY=
 
 MCP_CMD = r"""@echo off
 setlocal EnableExtensions DisableDelayedExpansion
-for %%I in ("%~dp0..") do set "PKG_ROOT=%%~dpI"
+for %%I in ("%~dp0..") do set "PKG_ROOT=%%~fI"
 set "PYTHONDONTWRITEBYTECODE=1"
-set "PYTHONPATH=%PKG_ROOT%python\Lib\site-packages;%PKG_ROOT%src"
-"%PKG_ROOT%python\python.exe" -m memory_system.mcp_server
+set "PYTHONPATH=%PKG_ROOT%\python\Lib\site-packages;%PKG_ROOT%\src"
+"%PKG_ROOT%\python\python.exe" -m memory_system.mcp_server
 exit /b %ERRORLEVEL%
 """
 
 WEB_CMD = r"""@echo off
 setlocal EnableExtensions DisableDelayedExpansion
-for %%I in ("%~dp0..") do set "PKG_ROOT=%%~dpI"
+for %%I in ("%~dp0..") do set "PKG_ROOT=%%~fI"
 set "PYTHONDONTWRITEBYTECODE=1"
-set "PYTHONPATH=%PKG_ROOT%python\Lib\site-packages;%PKG_ROOT%src"
-"%PKG_ROOT%python\python.exe" -m memory_system.web_server %*
+set "PYTHONPATH=%PKG_ROOT%\python\Lib\site-packages;%PKG_ROOT%\src"
+"%PKG_ROOT%\python\python.exe" -m memory_system.web_server %*
 exit /b %ERRORLEVEL%
 """
 
 CLI_CMD = r"""@echo off
 setlocal EnableExtensions DisableDelayedExpansion
-for %%I in ("%~dp0..") do set "PKG_ROOT=%%~dpI"
+for %%I in ("%~dp0..") do set "PKG_ROOT=%%~fI"
 set "PYTHONDONTWRITEBYTECODE=1"
-set "PYTHONPATH=%PKG_ROOT%python\Lib\site-packages;%PKG_ROOT%src"
-"%PKG_ROOT%python\python.exe" -m memory_system.cli %*
+set "PYTHONPATH=%PKG_ROOT%\python\Lib\site-packages;%PKG_ROOT%\src"
+"%PKG_ROOT%\python\python.exe" -m memory_system.cli %*
 exit /b %ERRORLEVEL%
 """
 
@@ -431,6 +443,141 @@ def deploy_dir() -> Path:
     """本脚本所在目录（<项目根>\\deploy）。"""
 
     return Path(__file__).resolve().parent
+
+
+def detect_packager_runtime() -> Path | None:
+    """探测打包用的 Python 3.11 安装目录；找不到返回 None。
+
+    顺序：环境变量 → py 启动器 → PATH → 常见安装位置。候选必须同时具备 python.exe
+    与 DLLs（DLLs 里是 _sqlite3.pyd，缺了存储层直接不可用）。
+    """
+
+    candidates: list[Path] = []
+
+    env_value = os.environ.get(RUNTIME_ENV_VAR)
+    if env_value:
+        candidates.append(Path(env_value))
+
+    launcher = shutil.which("py") or shutil.which("py.exe")
+    if launcher:
+        code, output = run([launcher, "-0p"], allow_fail=True)
+        if code == 0:
+            for line in output.splitlines():
+                stripped = line.strip()
+                if not stripped.startswith("-V:" + REQUIRED_PYTHON_VERSION):
+                    continue
+                parts = stripped.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                exe_text = parts[1].lstrip("*").strip()
+                if exe_text:
+                    candidates.append(Path(exe_text).parent)
+
+    for name in ("python3.11", "python"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(Path(found).parent)
+
+    candidates.extend(Path(item) for item in RUNTIME_FALLBACK_DIRS)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        try:
+            key = str(candidate.resolve()).lower()
+        except OSError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        exe = candidate / "python.exe"
+        if not exe.is_file() or not (candidate / "DLLs").is_dir():
+            continue
+        code, output = run(
+            [exe, "-c", "import sys;print('%d.%d' % sys.version_info[:2])"], allow_fail=True
+        )
+        if code == 0 and output.strip().startswith(REQUIRED_PYTHON_VERSION):
+            return candidate
+    return None
+
+
+def resolve_runtime(explicit: str | None) -> Path:
+    """确定打包用的 Python 3.11 安装目录：--runtime > 环境变量 > 自动探测。"""
+
+    if explicit:
+        return Path(explicit).resolve()
+
+    detected = detect_packager_runtime()
+    if detected is None:
+        fail(
+            "找不到打包用的 Python %s 安装目录。\n"
+            "请用 --runtime 指定（例如 --runtime C:\\Python311，该目录下应有 python.exe），"
+            "或设置环境变量 %s。\n"
+            "也可以先用 Windows 的 py 启动器装一个 %s：py -%s -m pip --version 能跑通即可。"
+            % (
+                REQUIRED_PYTHON_VERSION,
+                RUNTIME_ENV_VAR,
+                REQUIRED_PYTHON_VERSION,
+                REQUIRED_PYTHON_VERSION,
+            )
+        )
+    cout("  已自动探测打包机运行时：%s" % detected)
+    return detected
+
+
+def read_package_version(src: Path) -> str | None:
+    """读源码里的 __version__（文本解析，不 import，避免依赖缺失时读不到版本）。"""
+
+    init_path = src / "memory_system" / "__init__.py"
+    if not init_path.is_file():
+        return None
+    for line in init_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("__version__"):
+            value = line.partition("=")[2].split("#")[0].strip().strip("'\"")
+            return value or None
+    return None
+
+
+def read_pyproject_version(project_root: Path) -> str | None:
+    """读 pyproject.toml 的 [project] 段里的 version。"""
+
+    pyproject = project_root / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    in_project = False
+    for line in pyproject.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_project = stripped == "[project]"
+            continue
+        if in_project and stripped.startswith("version") and "=" in stripped:
+            return stripped.partition("=")[2].strip().strip("'\"") or None
+    return None
+
+
+def resolve_version(explicit: str | None, src: Path, project_root: Path) -> str:
+    """确定打进包里的版本号，保证源码、pyproject.toml、命令行三处一致。"""
+
+    declared = read_package_version(src)
+    pyproject_version = read_pyproject_version(project_root)
+
+    if declared and pyproject_version and declared != pyproject_version:
+        fail(
+            "版本号不一致：src\\memory_system\\__init__.py 是 %s，pyproject.toml 是 %s。\n"
+            "先把两处改成同一个版本号再打包。" % (declared, pyproject_version)
+        )
+    source_version = declared or pyproject_version
+    if not source_version:
+        fail(
+            "读不到版本号：请检查 %s 里的 __version__ 与 %s 里的 [project] version。"
+            % (src / "memory_system" / "__init__.py", project_root / "pyproject.toml")
+        )
+    if explicit and explicit != source_version:
+        fail(
+            "--version %s 与源码声明的版本号 %s 不一致。\n"
+            "要么改用 %s，要么先把源码与 pyproject.toml 一起升到 %s。"
+            % (explicit, source_version, source_version, explicit)
+        )
+    return source_version
 
 
 def resolve_src_root(src: Path) -> Path:
@@ -712,7 +859,16 @@ def parse_args(argv=None):
         help="项目根目录（默认脚本所在目录，即 <项目根>\\deploy；脚本会自动定位 memory_system）",
     )
     parser.add_argument("--out", default=None, help="输出目录（默认 <项目根>\\deploy\\dist）")
-    parser.add_argument("--runtime", default=DEFAULT_RUNTIME, help="打包机 Python 3.11 安装目录")
+    parser.add_argument(
+        "--runtime",
+        default=None,
+        help="打包用 Python 3.11 安装目录（默认读环境变量 %s 或自动探测）" % RUNTIME_ENV_VAR,
+    )
+    parser.add_argument(
+        "--version",
+        default=None,
+        help="版本号（默认取源码 __version__，并与 pyproject.toml 校验一致）",
+    )
     parser.add_argument("--wheels", default=None, help="预下载的 wheel 目录（给了就不联网下载）")
     parser.add_argument("--keep-work", action="store_true", help="保留中间目录 _work 便于排查")
     args = parser.parse_args(argv)
@@ -726,17 +882,19 @@ def main(argv=None) -> int:
     args = parse_args(argv)
 
     src = resolve_src_root(Path(args.src).resolve())
-    runtime = Path(args.runtime).resolve()
+    runtime = resolve_runtime(args.runtime)
     # 默认输出到「项目根的 deploy\dist」：src 布局下项目根是 src 的上一级，否则就是 src 本身
     project_root = src.parent if src.name == "src" else src
     out = Path(args.out).resolve() if args.out else (project_root / "deploy" / "dist")
     wheels_arg = Path(args.wheels).resolve() if args.wheels else None
+    version = resolve_version(args.version, src, project_root)
 
     total_steps = 10
 
     cout("=" * 68)
     cout("concept-memory 离线包构建")
     cout("=" * 68)
+    cout("版本号  : %s" % version)
     cout("源码根  : %s" % src)
     cout("输出目录: %s" % out)
     cout("运行时  : %s" % runtime)
@@ -847,9 +1005,11 @@ def main(argv=None) -> int:
     mcp_cmd = bin_dir / "memory-mcp.cmd"
     web_cmd = bin_dir / "memory-web.cmd"
     cli_cmd = bin_dir / "memory-concepts.cmd"
-    mcp_cmd.write_text(MCP_CMD.replace("\n", "\r\n"), encoding="ascii")
-    web_cmd.write_text(WEB_CMD.replace("\n", "\r\n"), encoding="ascii")
-    cli_cmd.write_text(CLI_CMD.replace("\n", "\r\n"), encoding="ascii")
+    # newline="" 必须给：默认文本模式会把我们已经写好的 \r\n 再翻译一次，
+    # 在 Windows 上会变成 \r\r\n，批处理解析出错。
+    mcp_cmd.write_text(MCP_CMD.replace("\n", "\r\n"), encoding="ascii", newline="")
+    web_cmd.write_text(WEB_CMD.replace("\n", "\r\n"), encoding="ascii", newline="")
+    cli_cmd.write_text(CLI_CMD.replace("\n", "\r\n"), encoding="ascii", newline="")
     cout("  已写入 %s" % mcp_cmd)
     cout("  已写入 %s" % web_cmd)
     cout("  已写入 %s" % cli_cmd)
@@ -860,6 +1020,8 @@ def main(argv=None) -> int:
     install_src = deploy_path / "INSTALL.md"
     examples_src = deploy_path / "mcp-config-examples"
     checker_src = deploy_path / "check_install.ps1"
+    rules_src = deploy_path / "agent-rules-template.md"
+    changelog_src = project_root / "CHANGELOG.md"
     missing = []
     if not install_src.is_file():
         missing.append(str(install_src))
@@ -867,6 +1029,10 @@ def main(argv=None) -> int:
         missing.append(str(examples_src))
     if not checker_src.is_file():
         missing.append(str(checker_src))
+    if not rules_src.is_file():
+        missing.append(str(rules_src))
+    if not changelog_src.is_file():
+        missing.append(str(changelog_src))
     if missing:
         fail(
             "安装说明类文件缺失，请先补齐后再打包：\n  - "
@@ -875,8 +1041,15 @@ def main(argv=None) -> int:
         )
     shutil.copy2(install_src, pkg_root / "install" / "INSTALL.md")
     ensure_utf8_bom(checker_src, pkg_root / "install" / "check_install.ps1")
+    shutil.copy2(rules_src, pkg_root / "install" / "agent-rules-template.md")
+    shutil.copy2(changelog_src, pkg_root / "CHANGELOG.md")
+    (pkg_root / "VERSION").write_text(version + "\n", encoding="utf-8")
     example_count = copytree(examples_src, pkg_root / "install" / "mcp-config-examples")
-    cout("  已复制 INSTALL.md、check_install.ps1（已补 UTF-8 BOM）与 %d 个配置示例文件" % example_count)
+    cout(
+        "  已复制 INSTALL.md、agent-rules-template.md、check_install.ps1（已补 UTF-8 BOM）"
+        "与 %d 个配置示例文件" % example_count
+    )
+    cout("  已写入 VERSION（%s）与 CHANGELOG.md" % version)
 
     # --- 自检（打包前必须通过） ------------------------------------------
     cout("")
@@ -891,7 +1064,7 @@ def main(argv=None) -> int:
     # --- 9) 打 zip --------------------------------------------------------
     step(9, total_steps, "打包 zip")
     out.mkdir(parents=True, exist_ok=True)
-    zip_path = out / ZIP_NAME
+    zip_path = out / ZIP_NAME_TEMPLATE.format(version=version)
     if zip_path.exists():
         cout("  覆盖已存在的 zip：%s" % zip_path)
         zip_path.unlink()
@@ -917,6 +1090,7 @@ def main(argv=None) -> int:
     cout("=" * 68)
     cout("构建完成")
     cout("=" * 68)
+    cout("版本号            : %s" % version)
     cout("zip 绝对路径      : %s" % zip_path.resolve())
     cout("zip 体积          : %s" % human_size(zip_size))
     cout("解压后体积        : %s" % human_size(raw_size))

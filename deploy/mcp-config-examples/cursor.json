@@ -1,0 +1,13 @@
+{
+  "_comment": "Cursor 配置片段。全局配置放在 ~/.cursor/mcp.json（Windows 即 C:\\Users\\<你的用户名>\\.cursor\\mcp.json，在该目录新建即可支持新版本 Cursor 的全局 MCP 配置）；只给单个项目用时放在项目根目录的 .cursor\\mcp.json。两种位置的内容格式完全一致，把下面 mcpServers 整节写入该文件；把 <PKG_ROOT> 替换成包解压后的绝对路径（例如 D:\\tools\\concept-memory），路径里的反斜杠写成双反斜杠。路径含空格或中文时同样保持引号完整、不要去掉引号。保存后在 Cursor 的 Settings > MCP 中确认 concept-memory 显示为已连接（绿点）。",
+  "_api_key_note": "DASHSCOPE_API_KEY 在 https://bailian.console.aliyun.com 获取，或直接填在这里的 value 中。环境变量在此处配置后，MCP 服务无需读取任何 .env 文件。",
+  "mcpServers": {
+    "concept-memory": {
+      "command": "<PKG_ROOT>\\bin\\memory-mcp.cmd",
+      "args": [],
+      "env": {
+        "DASHSCOPE_API_KEY": ""
+      }
+    }
+  }
+}

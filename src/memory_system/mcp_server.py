@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .activation import SpreadingActivationSearch, record_usage
+from . import __version__ as _VERSION
 from .cache import ConceptCache
 from .incremental import incremental_scan
 from .retrieval import QwenFlashRetriever, RetrievalConfig
@@ -415,7 +416,9 @@ def build_server() -> Any:
     import mcp.types as mcp_types
     from mcp.server.lowlevel import Server
 
-    server: Any = Server("concept-memory")
+    # version 会出现在 MCP initialize 返回的 serverInfo 里，
+    # 用户和 agent 靠它确认自己装的是哪一版。
+    server: Any = Server("concept-memory", version=_VERSION)
 
     _TOOLS = [
         mcp_types.Tool(

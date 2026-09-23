@@ -1,0 +1,14 @@
+{
+  "_comment": "通用 stdio MCP 配置片段，适用于任何接受 mcpServers 结构的客户端（含其它 AI Agent / IDE 插件）。把 <PKG_ROOT> 替换成包解压后的绝对路径（例如 D:\\tools\\concept-memory），路径里的反斜杠写成双反斜杠，也可改写成正斜杠。若你的客户端没有 mcpServers 这一层，就只把 concept-memory 这个对象复制到它自己的服务列表写法里（服务名 concept-memory，传输类型 stdio，命令 <PKG_ROOT>\\bin\\memory-mcp.cmd，无参数，环境变量 DASHSCOPE_API_KEY）。路径含空格或中文时必须保持引号完整、不要去掉引号。",
+  "_api_key_note": "DASHSCOPE_API_KEY 在 https://bailian.console.aliyun.com 获取，或直接填在这里的 value 中。环境变量在此处配置后，MCP 服务无需读取任何 .env 文件。",
+  "_protocol_note": "该服务用标准输入输出通信，不监听端口。它不会把日志写到 stdout；若客户端把服务日志混入对话，请检查客户端自身的日志设置，而不是在本配置里加输出重定向。服务对外提供两个工具：scan_codebase（传入项目绝对路径，建立或增量更新该项目的概念索引，索引写入被扫描项目的 .concept-memory\\ 目录）与 search_concepts（先传 query 检索概念卡片，再传 card_ids 一次读多张完整卡片）。",
+  "mcpServers": {
+    "concept-memory": {
+      "command": "<PKG_ROOT>\\bin\\memory-mcp.cmd",
+      "args": [],
+      "env": {
+        "DASHSCOPE_API_KEY": ""
+      }
+    }
+  }
+}

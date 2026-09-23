@@ -30,6 +30,22 @@
 
 ## 安装与运行
 
+普通用户不需要装 Python，也不需要懂 MCP：下载离线包，解压，然后把包内的安装说明交给自己的 coding agent 执行。
+
+1. 从 [Releases](../../releases/latest) 下载 `concept-memory-offline-win64-v<版本>.zip`。
+2. 解压到任意目录（路径含空格或中文都可以，别在压缩包里直接运行）。
+3. 把包内 `install/INSTALL.md` 交给你的 coding agent，让它照着装 —— 那份说明的读者是 agent，每一步都有可判定的通过条件：自检、写客户端配置、配 Key、首跑扫描，以及把你的代码定位规则写进项目 `AGENTS.md`。
+
+包自带 Python 运行时与全部依赖，目标机器不需要装 Python、不需要 pip、不需要联网安装；但概念合成与检索需要你自备 DashScope（阿里云百炼）API Key。
+
+**升级**：关掉客户端，把新版本 zip 解压出的 `concept-memory\` 覆盖旧目录即可。包内顶层文件夹名固定为 `concept-memory`，所以客户端配置里的路径一个字都不用改；概念索引数据存在**你的项目**的 `.concept-memory/` 下，升级不会丢，重跑一次 `scan_codebase` 是增量重扫。
+
+**平台**：目前只提供 Windows x64 离线包。版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+
+### 从源码安装与运行（开发方式）
+
+仓库内执行 `python deploy/build_offline_bundle.py --version <版本号>` 可以从当前源码重新产出离线包（打包机需有 Python 3.11，脚本会自动探测，也可用 `--runtime` 指定）；一条命令完成「校验 → 测试 → 构建 → 包验收 → 打 tag → 发 GitHub Release」用 `python deploy/release.py --version <版本号>`（先加 `--dry-run` 演练，不会碰 git、不发网络请求；正式发布需要环境变量 `GITHUB_TOKEN`）。
+
 ```bash
 pip install -e '.[dashscope]'
 export DASHSCOPE_API_KEY='在 shell 中设置，不要写入代码或仓库'
@@ -80,8 +96,13 @@ with ConceptStore("concepts.sqlite") as store:
 ## 文档入口
 
 - [产品设计文档](产品设计文档.md)
+- [变更记录](CHANGELOG.md)
 - [架构说明](docs/architecture.md)
 - [架构图（交互式）](docs/architecture-diagram.html)
+
+## 许可证
+
+[MIT](LICENSE)
 
 ## 状态
 
