@@ -215,7 +215,7 @@ def analyze_path(
                 config=item.effective_config,
                 generated_by=item.effective_model,
             )
-            cards.extend(FileConceptEncoder(prepared, resolved_config).encode(item.facts))
+            cards.extend(FileConceptEncoder(prepared, item.effective_config).encode(item.facts))
     finally:
         if owns_cache:
             # ConceptCache is JSON-backed and does not hold a resource, but this

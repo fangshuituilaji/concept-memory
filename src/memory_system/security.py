@@ -141,7 +141,18 @@ class SecurityBoundaryError(ValueError):
 # These are deliberately path-based indicators.  The policy does not inspect
 # source contents, which keeps the boundary deterministic and avoids putting
 # source into an audit trail.
-_SENSITIVE_EXTENSIONS = frozenset({".pem", ".key", ".crt"})
+_SENSITIVE_EXTENSIONS = frozenset({".pem", ".key", ".crt", ".p12", ".pfx", ".jks"})
+# Canonical credential files whose names carry no sensitive token and no
+# listed extension (ssh keys, .netrc); ``.pub`` variants stay sendable.
+_SENSITIVE_FILENAMES = frozenset(
+    {
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        ".netrc",
+    }
+)
 _SENSITIVE_COMPONENTS = frozenset(
     {
         "secret",
@@ -583,6 +594,8 @@ class SecurityPolicy:
             return True
         if Path(filename).suffix.casefold() in _SENSITIVE_EXTENSIONS:
             return True
+        if filename in _SENSITIVE_FILENAMES:
+            return True
         return any(
             token in _SENSITIVE_COMPONENTS
             for component in relative_parts
@@ -777,7 +790,14 @@ def _overall_decision(
     items: Sequence[Mapping[str, Any]],
 ) -> str:
     if items:
-        return "allow" if all(bool(item.get("allowed", item.get("decision") == "allow")) for item in items) else "deny"
+
+        def _granted(item: Mapping[str, Any]) -> bool:
+            allowed = item.get("allowed", item.get("decision") == "allow")
+            if isinstance(allowed, str):
+                return allowed.strip().casefold() in {"allow", "allowed", "true", "yes"}
+            return bool(allowed)
+
+        return "allow" if all(_granted(item) for item in items) else "deny"
     if isinstance(original, bool):
         return "allow" if original else "deny"
     if isinstance(original, str):

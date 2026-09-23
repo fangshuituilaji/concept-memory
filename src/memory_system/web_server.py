@@ -617,10 +617,18 @@ function openPanel(n) {
     .map(ed=>({name: names[ed.a===idx ? ed.b : ed.a], count: ed.usage}));
   document.getElementById('p-name').textContent = c.name;
   document.getElementById('p-def').textContent = c.definition;
-  document.getElementById('p-meta').innerHTML =
-    '<div><b>文件</b>' + c.location.file_path + '</div>' +
-    '<div><b>行号</b>' + c.location.start_line + ' – ' + c.location.end_line + '</div>' +
-    '<div><b>card_id</b>' + c.id + '</div>';
+  const meta = document.getElementById('p-meta');
+  meta.textContent = '';
+  [['文件', c.location.file_path],
+   ['行号', c.location.start_line + ' – ' + c.location.end_line],
+   ['card_id', c.id]].forEach(function(pair) {
+    const row = document.createElement('div');
+    const b = document.createElement('b');
+    b.textContent = pair[0];
+    row.appendChild(b);
+    row.appendChild(document.createTextNode(String(pair[1])));
+    meta.appendChild(row);
+  });
   const title = document.getElementById('p-links-title');
   const box = document.getElementById('p-links');
   box.innerHTML = '';
@@ -686,25 +694,62 @@ class _Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
         elif parsed.path == "/api/scan":
+            if not self._scan_request_allowed():
+                self._send_json(
+                    403, {"status": "rejected", "reason": "request origin not allowed"}
+                )
+                return
             query = parse_qs(parsed.query)
             target = query.get("path", [""])[0].strip()
             scan_root = getattr(self.server, "scan_root", "") or os.getcwd()
+            root_real = os.path.normcase(os.path.realpath(scan_root))
             if not target:
-                target = scan_root
-            elif not os.path.isabs(target):
-                target = os.path.join(scan_root, target)
+                target = os.path.realpath(scan_root)
+            else:
+                if not os.path.isabs(target):
+                    target = os.path.join(scan_root, target)
+                target_real = os.path.normcase(os.path.realpath(target))
+                if target_real != root_real and not target_real.startswith(
+                    root_real + os.sep
+                ):
+                    self._send_json(
+                        403,
+                        {
+                            "status": "rejected",
+                            "reason": "path escapes scan root",
+                            "scan_root": os.path.realpath(scan_root),
+                        },
+                    )
+                    return
+                target = os.path.realpath(target)
             thread = threading.Thread(
                 target=run_scan_with_progress, args=(target,), daemon=True
             )
             thread.start()
-            payload = json.dumps({"status": "started", "path": target}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
+            self._send_json(200, {"status": "started", "path": target})
         else:
             self.send_error(404)
+
+    def _send_json(self, status: int, obj: dict[str, Any]) -> None:
+        payload = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _scan_request_allowed(self) -> bool:
+        """Gate the state-changing /api/scan endpoint to loopback same-origin callers."""
+
+        port = self.server.server_address[1]
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            return False
+        origin = (self.headers.get("Origin") or "").strip()
+        if not origin:
+            return True
+        parsed_origin = urlparse(origin)
+        return parsed_origin.scheme == "http" and parsed_origin.netloc.lower() == host
 
     def _serve_concepts(self) -> None:
         db = self.server.database_path  # type: ignore[attr-defined]
@@ -789,8 +834,8 @@ def main() -> None:
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
 
-    start_web_server(args.database, args.port)
-    url = f"http://127.0.0.1:{args.port}"
+    server = start_web_server(args.database, args.port)
+    url = f"http://127.0.0.1:{server.server_address[1]}"
     print(f"Concept Memory visualization running at {url}")
     if not args.no_browser:
         webbrowser.open(url)

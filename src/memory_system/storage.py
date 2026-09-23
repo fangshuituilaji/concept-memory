@@ -271,7 +271,7 @@ class ConceptStore:
             # because recall (not precision) is this method's job.
             clauses = []
             params: list[str] = []
-            for term in escaped:
+            for term in terms:
                 clauses.append(
                     "name LIKE ? OR definition LIKE ?"
                     " OR json_extract(concept_cards.card_json, '$.background') LIKE ?"

@@ -403,6 +403,8 @@ class ConceptCache:
             return
         try:
             payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
             if payload.get("schema_version") != _CACHE_SCHEMA_VERSION:
                 return
             entries = payload.get("entries", {})

@@ -245,7 +245,10 @@ class IncrementalScanTests(unittest.TestCase):
         gamma = self.root / "gamma.py"
         (self.root / "alpha.py").replace(gamma)
         result2, second = self._scan({"gamma.py": ALPHA_TWO_CONCEPTS})
-        self.assertEqual(second.calls, ["gamma.py"])
+        # Content-addressed cache: identical bytes under the new name hit the
+        # cached drafts, so no synthesis call happens; the assertions below
+        # still require the ids and usage edges to carry over.
+        self.assertEqual(second.calls, [])
         self.assertEqual(result2.renamed_files, ("alpha.py -> gamma.py",))
         self.assertEqual(
             {card.id for card in result2.cards}, {card.id for card in result1.cards}

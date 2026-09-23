@@ -126,7 +126,9 @@ class SpreadingActivationSearch:
                 for neighbor_id, edge_conf in self._edges.get(node_id, []):
                     spread = node_act * self.decay * edge_conf
                     if spread > activations.get(neighbor_id, 0.0) and spread >= self.threshold:
-                        next_frontier[neighbor_id] = (spread, node_id)
+                        best = next_frontier.get(neighbor_id)
+                        if best is None or spread > best[0]:
+                            next_frontier[neighbor_id] = (spread, node_id)
             for neighbor_id, (spread, from_id) in next_frontier.items():
                 activations[neighbor_id] = spread
                 hops[neighbor_id] = _hop + 1
@@ -166,25 +168,27 @@ def record_usage(database_path: str, card_ids: list[str]) -> None:
     if len(unique_ids) < 2:
         return
     conn = sqlite3.connect(database_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS concept_usage_edges (
-            source_id TEXT NOT NULL,
-            target_id TEXT NOT NULL,
-            count INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (source_id, target_id)
-        )
-    """)
-    with conn:
-        for i, source in enumerate(unique_ids):
-            for target in unique_ids[i + 1:]:
-                first, second = sorted((source, target))
-                conn.execute("""
-                    INSERT INTO concept_usage_edges(source_id, target_id, count)
-                    VALUES (?, ?, 1)
-                    ON CONFLICT(source_id, target_id) DO UPDATE SET
-                        count = count + 1,
-                        updated_at = CURRENT_TIMESTAMP
-                """, (first, second))
-    conn.close()
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS concept_usage_edges (
+                source_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (source_id, target_id)
+            )
+        """)
+        with conn:
+            for i, source in enumerate(unique_ids):
+                for target in unique_ids[i + 1:]:
+                    first, second = sorted((source, target))
+                    conn.execute("""
+                        INSERT INTO concept_usage_edges(source_id, target_id, count)
+                        VALUES (?, ?, 1)
+                        ON CONFLICT(source_id, target_id) DO UPDATE SET
+                            count = count + 1,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (first, second))
+    finally:
+        conn.close()

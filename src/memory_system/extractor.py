@@ -291,9 +291,9 @@ class TreeSitterSourceAnalyzer:
                 value_node = child.child_by_field_name("value")
                 if not name_node or not value_node:
                     continue
-                value_src = src[value_node.start_byte:value_node.end_byte].decode()
-                if not ("=>" in value_src or value_node.type == "arrow_function"):
+                if value_node.type not in ("arrow_function", "function_expression"):
                     continue
+                value_src = src[value_node.start_byte:value_node.end_byte].decode()
                 name = src[name_node.start_byte:name_node.end_byte].decode()
                 qualified = ".".join((*scopes, name)) if name else ".".join(scopes)
                 out.append(SymbolFact(

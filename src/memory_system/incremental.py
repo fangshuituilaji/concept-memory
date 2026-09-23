@@ -257,8 +257,14 @@ def incremental_scan(
     changed_records: list[FileStateRecord] = []
     refreshed_records: list[FileStateRecord] = []
     unchanged: list[str] = []
-    for rel, file_path in rel_files.items():
-        stat = file_path.stat()
+    for rel, file_path in list(rel_files.items()):
+        try:
+            stat = file_path.stat()
+        except OSError:
+            # Vanished between discovery and stat: treat it as deleted so its
+            # state and orphan cards are cleaned up like any other removal.
+            del rel_files[rel]
+            continue
         record = states.get(rel)
         if (
             record is not None
@@ -268,7 +274,13 @@ def incremental_scan(
         ):
             unchanged.append(rel)
             continue
-        digest = _source_digest(file_path)
+        try:
+            digest = _source_digest(file_path)
+        except (OSError, UnicodeDecodeError):
+            # Unreadable or non-UTF-8 right now: keep the existing state and
+            # cards, retry on the next scan instead of aborting the rescan.
+            unchanged.append(rel)
+            continue
         if record is not None and record.source_digest == digest and rel in stored_paths:
             # Stat changed but content is identical (git rewrote the file);
             # remember the new stat so the fast path hits next time.
@@ -335,7 +347,10 @@ def incremental_scan(
         set(rel_files),
     )
     if cache is not None:
-        cache.prune_missing(set(rel_files), root=root_path)
+        # Cache entries are keyed by absolute source paths (see
+        # pipeline.analyze_path); root-relative keys would resolve against
+        # the CWD and invalidate every entry whenever root != CWD.
+        cache.prune_missing(set(rel_files.values()), root=root_path)
 
     return IncrementalScanResult(
         cards=[*reused, *new_cards],

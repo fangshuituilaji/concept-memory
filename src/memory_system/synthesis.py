@@ -128,10 +128,10 @@ class DashScopeQwenSynthesizer:
                     )},
                 ],
                 result_format="message",
-            timeout=REQUEST_TIMEOUT_SECONDS,
+                timeout=REQUEST_TIMEOUT_SECONDS,
             )
-            content = _response_content(response)
             try:
+                content = _response_content(response)
                 drafts = _parse_drafts(content)
             except (ValueError, json.JSONDecodeError):
                 # Final fallback: use generic concepts from symbol names
