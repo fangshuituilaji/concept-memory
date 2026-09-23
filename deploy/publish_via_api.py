@@ -428,6 +428,7 @@ def parse_args(argv=None):
     parser.add_argument("--repo", default=None, help="仓库名（默认取 origin 或 concept-memory）")
     parser.add_argument("--create-repo", action="store_true", help="仓库不存在时创建为公开仓库")
     parser.add_argument("--branch", default="main", help="目标分支，默认 main")
+    parser.add_argument("--skip-tag", action="store_true", help="只推分支，不创建 tag")
     parser.add_argument("--skip-release", action="store_true", help="只推代码与 tag，不建 Release")
     parser.add_argument("--dry-run", action="store_true", help="只打印将调用的接口，不发写请求")
     return parser.parse_args(argv)
@@ -484,7 +485,10 @@ def main(argv=None) -> int:
     )
 
     step(3, total_steps, "创建 tag")
-    create_tag(token, owner, repo, args.version, commit_sha)
+    if args.skip_tag:
+        cout("  已按 --skip-tag 跳过 tag。")
+    else:
+        create_tag(token, owner, repo, args.version, commit_sha)
 
     step(4, total_steps, "创建 Release 并上传资产")
     if args.skip_release:
