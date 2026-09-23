@@ -33,6 +33,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -97,24 +98,33 @@ def api(method: str, url: str, token: str, payload=None, body: bytes | None = No
     elif body is not None:
         data = body
 
-    request = urllib.request.Request(url, data=data, method=method)
-    request.add_header("Authorization", "Bearer " + token)
-    request.add_header("Accept", "application/vnd.github+json")
-    request.add_header("X-GitHub-Api-Version", "2022-11-28")
-    request.add_header("User-Agent", "concept-memory-publish")
-    if content_type:
-        request.add_header("Content-Type", content_type)
-
-    try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        if allow_fail:
-            return exc.code, detail
-        fail("GitHub 接口返回 %s：%s\n%s" % (exc.code, url, detail[:600]))
-    except urllib.error.URLError as exc:
-        fail("访问 GitHub 失败（网络或代理问题）：%s\n%s" % (url, exc.reason))
+    # 这台机器的 DNS/连接偶发抖动，重试 4 次再判失败
+    raw = b""
+    last_error = None
+    for attempt in range(1, 5):
+        request = urllib.request.Request(url, data=data, method=method)
+        request.add_header("Authorization", "Bearer " + token)
+        request.add_header("Accept", "application/vnd.github+json")
+        request.add_header("X-GitHub-Api-Version", "2022-11-28")
+        request.add_header("User-Agent", "concept-memory-publish")
+        if content_type:
+            request.add_header("Content-Type", content_type)
+        try:
+            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+                raw = response.read()
+            last_error = None
+            break
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")
+            if allow_fail:
+                return exc.code, detail
+            fail("GitHub 接口返回 %s：%s\n%s" % (exc.code, url, detail[:600]))
+        except urllib.error.URLError as exc:
+            last_error = exc
+            cout("    [重试 %d/4] %s（%s）" % (attempt, url, exc.reason))
+            time.sleep(2 * attempt)
+    if last_error is not None:
+        fail("访问 GitHub 失败（网络或代理问题）：%s\n%s" % (url, last_error.reason))
     if not raw:
         return 200, {}
     return 200, json.loads(raw.decode("utf-8"))
@@ -418,6 +428,7 @@ def parse_args(argv=None):
     parser.add_argument("--repo", default=None, help="仓库名（默认取 origin 或 concept-memory）")
     parser.add_argument("--create-repo", action="store_true", help="仓库不存在时创建为公开仓库")
     parser.add_argument("--branch", default="main", help="目标分支，默认 main")
+    parser.add_argument("--skip-tag", action="store_true", help="只推分支，不创建 tag")
     parser.add_argument("--skip-release", action="store_true", help="只推代码与 tag，不建 Release")
     parser.add_argument("--dry-run", action="store_true", help="只打印将调用的接口，不发写请求")
     return parser.parse_args(argv)
@@ -474,7 +485,10 @@ def main(argv=None) -> int:
     )
 
     step(3, total_steps, "创建 tag")
-    create_tag(token, owner, repo, args.version, commit_sha)
+    if args.skip_tag:
+        cout("  已按 --skip-tag 跳过 tag。")
+    else:
+        create_tag(token, owner, repo, args.version, commit_sha)
 
     step(4, total_steps, "创建 Release 并上传资产")
     if args.skip_release:

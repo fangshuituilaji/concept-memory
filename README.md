@@ -46,6 +46,8 @@
 
 仓库内执行 `python deploy/build_offline_bundle.py --version <版本号>` 可以从当前源码重新产出离线包（打包机需有 Python 3.11，脚本会自动探测，也可用 `--runtime` 指定）；一条命令完成「校验 → 测试 → 构建 → 包验收 → 打 tag → 发 GitHub Release」用 `python deploy/release.py --version <版本号>`（先加 `--dry-run` 演练，不会碰 git、不发网络请求；正式发布需要环境变量 `GITHUB_TOKEN`）。
 
+如果所在网络环境访问不了 `github.com:443`（`git push` 报连不上或 TLS 中断），但 `api.github.com` 正常，可以改用备用通道：`python deploy/publish_via_api.py --version <版本号>` 会通过 GitHub 官方接口把当前 HEAD 推成远端分支与 tag，再创建 Release 并上传产物。
+
 ```bash
 pip install -e '.[dashscope]'
 export DASHSCOPE_API_KEY='在 shell 中设置，不要写入代码或仓库'
