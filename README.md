@@ -23,14 +23,6 @@
 
 **限制**：目前只提供 Windows x64 离线包；建索引与检索都要联网调用 qwen-flash。
 
-## 开发
-
-- 产品设计与机制说明：[产品设计文档.md](产品设计文档.md)；架构：[docs/architecture.md](docs/architecture.md)
-- 装开发环境：`pip install -e ".[dev,mcp,dashscope]"`
-- 打包：`python deploy/build_offline_bundle.py --version <版本号>`
-- 发布：`python deploy/release.py --version <版本号>`（先跑 `--dry-run` 演练）
-- 版本变更：[CHANGELOG.md](CHANGELOG.md)
-
 ## 许可证
 
 [MIT](LICENSE)
