@@ -1,0 +1,15 @@
+{
+  "_comment": "Cline 配置片段。在 VS Code 中打开 Cline 面板，点顶部的 MCP Servers 图标，再点 Configure MCP Servers，编辑的就是 cline_mcp_settings.json。当前版本路径为 C:\\Users\\<你的用户名>\\.cline\\data\\settings\\cline_mcp_settings.json；旧版本在 VS Code 全局存储 C:\\Users\\<你的用户名>\\AppData\\Roaming\\Code\\User\\globalStorage\\saoudrizwan.claude-dev\\settings\\cline_mcp_settings.json——两处都查一下，以实际存在的那份为准。把下面 mcpServers 整节写入该文件；把 <PKG_ROOT> 替换成包解压后的绝对路径（例如 D:\\tools\\concept-memory），路径里的反斜杠写成双反斜杠。路径含空格或中文时同样保持引号完整、不要去掉引号。保存后回到 Cline 面板，确认 concept-memory 处于 Enabled 状态。",
+  "_api_key_note": "DASHSCOPE_API_KEY 在 https://bailian.console.aliyun.com 获取，或直接填在这里的 value 中。环境变量在此处配置后，MCP 服务无需读取任何 .env 文件。",
+  "mcpServers": {
+    "concept-memory": {
+      "command": "<PKG_ROOT>\\bin\\memory-mcp.cmd",
+      "args": [],
+      "env": {
+        "DASHSCOPE_API_KEY": ""
+      },
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
