@@ -202,6 +202,32 @@ def local_tree_entries():
     return entries
 
 
+def ensure_initial_commit(token: str, owner: str, repo: str, branch: str) -> None:
+    """空仓库不能直接写 Git Data 接口（会返回 409），先建一次初始提交。"""
+
+    status, _ = api(
+        "GET", "%s/repos/%s/%s/git/ref/heads/%s" % (GITHUB_API, owner, repo, branch), token,
+        allow_fail=True,
+    )
+    if status == 200:
+        return
+    placeholder = (
+        "# concept-memory\n\n"
+        "这是发布流程自动创建的占位提交，紧接着会被完整的项目内容覆盖。\n"
+    )
+    api(
+        "PUT",
+        "%s/repos/%s/%s/contents/README.md" % (GITHUB_API, owner, repo),
+        token,
+        payload={
+            "message": "chore: initialize repository",
+            "content": base64.b64encode(placeholder.encode("utf-8")).decode("ascii"),
+            "branch": branch,
+        },
+    )
+    cout("  空仓库：已创建初始提交（随后被完整内容覆盖）")
+
+
 def upload_tree(token: str, owner: str, repo: str):
     entries = local_tree_entries()
     cout("  本地文件数：%d，开始上传 blob" % len(entries))
@@ -435,9 +461,17 @@ def main(argv=None) -> int:
     ensure_repo(token, owner, repo, args.create_repo)
 
     step(2, total_steps, "上传文件并创建提交")
+    ensure_initial_commit(token, owner, repo, args.branch)
     tree_sha = upload_tree(token, owner, repo)
     commit_sha = create_commit(token, owner, repo, tree_sha, args.branch)
     update_branch(token, owner, repo, args.branch, commit_sha)
+    api(
+        "PATCH",
+        "%s/repos/%s/%s" % (GITHUB_API, owner, repo),
+        token,
+        payload={"default_branch": args.branch},
+        allow_fail=True,
+    )
 
     step(3, total_steps, "创建 tag")
     create_tag(token, owner, repo, args.version, commit_sha)
