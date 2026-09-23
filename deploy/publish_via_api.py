@@ -197,16 +197,24 @@ def ensure_repo(token: str, owner: str, repo: str, create: bool) -> None:
 def local_tree_entries():
     """读取 HEAD 的全部文件条目（path/mode/blob sha）。"""
 
-    output = git_text("ls-tree", "-r", "HEAD")
+    # -z 必须给：不加它，git 会把非 ASCII 路径转义成 "\344\272..." 这种字面量，
+    # 上传后远端文件名就是那串乱码。
+    raw = git_bytes("ls-tree", "-r", "-z", "HEAD")
     entries = []
-    for line in output.splitlines():
-        if not line.strip():
+    for record in raw.split(b"\0"):
+        if not record:
             continue
-        meta, _, path = line.partition("\t")
+        meta, _, path_bytes = record.partition(b"\t")
         mode, kind, sha = meta.split()
-        if kind != "blob":
+        if kind != b"blob":
             continue
-        entries.append({"path": path, "mode": mode, "sha": sha})
+        entries.append(
+            {
+                "path": path_bytes.decode("utf-8"),
+                "mode": mode.decode("ascii"),
+                "sha": sha.decode("ascii"),
+            }
+        )
     if not entries:
         fail("HEAD 里没有任何文件，无法发布。")
     return entries
