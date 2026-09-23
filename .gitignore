@@ -56,8 +56,12 @@ tmp/
 # Concept memory runtime data
 .concept-memory/
 
-# ZCode local session state (config.json is committed)
-.zcode/plans/
+# ZCode local session state：本地客户端配置，含本机绝对路径，不公开
+.zcode/
+
+# 本地 agent 规则与个人研究笔记：文件保留在本机磁盘，只是不纳入公开仓库
+AGENTS.md
+人类记忆理论参考.md
 
 # Archify / visual-check generated artifacts
 docs/.archify-delivery-*/
