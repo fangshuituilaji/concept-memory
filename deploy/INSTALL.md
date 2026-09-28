@@ -138,7 +138,9 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
 
 ## 步骤 4：套用客户端配置
 
-先从 `install\mcp-config-examples\` 里挑对应文件，把其中所有 `<PKG_ROOT>` 替换为步骤 1 的真实路径，再写入客户端配置文件。四个客户端的文件位置与要点如下。
+先从 `install\mcp-config-examples\` 里挑对应文件，把其中所有 `<PKG_ROOT>` 替换为步骤 1 的真实路径，再写入客户端配置文件。五个客户端的文件位置与要点如下。
+
+**写配置时的一个坑（实测踩过）**：安装路径含中文时，不要把写配置的命令存成无 BOM 的 UTF-8 `.ps1` 再用 Windows PowerShell 5.1 执行——它会把脚本按 ANSI 读取，中文路径直接乱码。要么把 `.ps1` 存成带 BOM 的 UTF-8，要么改用 Python 等按 UTF-8 处理文本的工具直接写 JSON。
 
 ### 4.1 Claude Desktop
 
@@ -193,7 +195,33 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
 
 **通过条件**：`ConvertFrom-Json` 通过，且 Cline 的 MCP 面板显示该服务为已连接（绿色）。
 
-### 4.4 通用 `mcpServers` JSON（其它支持 MCP 的客户端）
+### 4.4 ZCode
+
+- 配置文件（工作区级）：`<你的项目>\.zcode\config.json`，不存在则新建；已存在时**只替换 `mcp.servers` 里的 `concept-memory` 这一项**，不要动用户已有的其它服务。
+- ZCode 的层级是 `mcp.servers`（不是 `mcpServers`），条目字段同样是 `command` / `args` / `env`。
+- `command` 直接指向包内 `python\python.exe`（ZCode 下实测可用的形态），`PYTHONPATH` 由 `env` 提供两段路径、分号分隔，缺任何一段都会报 `No module named ...`。
+- 改完**必须重启 ZCode**——正在运行的会话不会热加载 MCP 配置。
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "concept-memory": {
+        "command": "<PKG_ROOT>\\python\\python.exe",
+        "args": ["-m", "memory_system.mcp_server"],
+        "env": {
+          "PYTHONPATH": "<PKG_ROOT>\\python\\Lib\\site-packages;<PKG_ROOT>\\src",
+          "DASHSCOPE_API_KEY": "sk-用户提供的真实Key"
+        }
+      }
+    }
+  }
+}
+```
+
+**通过条件**：`ConvertFrom-Json` 解析通过；`command` 指向的文件存在（`Test-Path` 为 `True`）；重启 ZCode 后工具列表出现 `scan_codebase` 与 `search_concepts`。
+
+### 4.5 通用 `mcpServers` JSON（其它支持 MCP 的客户端）
 
 适用于任何接受标准 `mcpServers` JSON 的客户端（Roo Code、VS Code 的 `.vscode\mcp.json`、Continue、各类 CLI agent 等）。先用下面这份最小片段：
 
@@ -263,7 +291,7 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
 1. 打开包内 `install\agent-rules-template.md`，取其中「规则正文」整段。
 2. 追加到**用户项目根目录**的 `AGENTS.md`：
    - 文件不存在：新建并写入规则正文；
-   - 文件已存在：**只追加，绝不覆盖或重写用户原有内容**。
+   - 文件已存在：**只追加，绝不覆盖或重写用户原有内容**；若文件里已有「代码定位规则（concept memory）」同名章节（重复安装或升级时会遇到），**跳过追加**，不要产生重复章节。
 3. 若用户同时用多个 coding agent（例如 Codex、Cursor、Claude Code），确认它们读的规则文件是哪一个；读 `CLAUDE.md`、`.cursorrules` 这类别的文件名时，把同一段规则也复制过去。
 
 **通过条件**：用户项目根目录的规则文件里能搜到 `scan_codebase` 与 `search_concepts` 两个工具名。
@@ -288,7 +316,7 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
 
 | 现象 | 常见原因 | 处理办法 |
 | --- | --- | --- |
-| 工具列表为空，看不到 `scan_codebase` / `search_concepts` | 配置写进了错误的文件；JSON 语法错误或带 BOM；客户端没重启 | 用 `ConvertFrom-Json` 验证文件；确认路径属当前客户端（4.1–4.4）；完全退出客户端进程后重启 |
+| 工具列表为空，看不到 `scan_codebase` / `search_concepts` | 配置写进了错误的文件；JSON 语法错误或带 BOM；客户端没重启 | 用 `ConvertFrom-Json` 验证文件；确认路径属当前客户端（4.1–4.5）；完全退出客户端进程后重启 |
 | 启动报 `No module named memory_system` | 没有走 `bin\memory-mcp.cmd`，或手写 `command` 时漏了 `PYTHONPATH` | 改用 `<PKG_ROOT>\bin\memory-mcp.cmd`；若必须直接调 `python.exe -m memory_system.mcp_server`，则 `env` 里补 `PYTHONPATH=<PKG_ROOT>\python\Lib\site-packages;<PKG_ROOT>\src`（分号分隔，两段都要） |
 | 启动报 `No module named mcp` | 依赖没装进包内 `site-packages`，或包被裁剪过 | 确认 `<PKG_ROOT>\python\Lib\site-packages\mcp\` 存在；重跑步骤 2 的自检；包不完整就用完整 zip 重新解压，不要手工补装 |
 | 启动报 `No module named _sqlite3` | 生成了 `python311._pth`（隔离模式导致 `DLLs\` 脱离 `sys.path`），或 `DLLs\_sqlite3.pyd` 被删 | **删掉** `python\python311._pth`（本包不应存在该文件）；确认 `<PKG_ROOT>\python\DLLs\_sqlite3.pyd` 存在；重跑步骤 2 自检 |
@@ -297,6 +325,7 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
 | 调用 `scan_codebase` 后机器上弹出浏览器窗口 | 服务会顺带启动本地概念网络页面（`http://127.0.0.1:<端口>`） | 属预期行为，不是报错；不要为此杀进程或改配置 |
 | `search_concepts` 报 `Online retrieval requires the DashScope API key...` | `search_concepts` 是纯在线检索，没有离线回退；Key 没送到该进程 | 按步骤 3 重填 Key（优先 `env` 字段），完全重启客户端后再试；`scan_codebase` 有离线退化路径，所以「能扫描」不代表 Key 配好了 |
 | 提示 `DASHSCOPE_API_KEY` 缺失或调不通 | Key 没写、写错位置（写进了 `.env` 而 MCP 不读 `.env`）、或写进系统变量后没重启客户端 | 按步骤 3 用 `env` 字段重填，Key 以 `sk-` 开头；用 `env` 方式后必须整体重启客户端 |
+| 想删项目里的 `.concept-memory\` 重建索引，Windows 报「文件被占用 / Device or resource busy」 | MCP 服务进程（包内 `python.exe`）还握着 SQLite 文件句柄 | 先完全退出客户端（或结束包内 `python.exe` 进程）再删；删完在新会话里重新 `scan_codebase`，首次扫描会全量重建 |
 | `search_concepts` 返回空或报错 | 索引尚未建立，或重排不可用 | 先成功跑完一次 `scan_codebase` 再检索；确认 `DASHSCOPE_API_KEY` 有效；重扫后仍失败才回退本地检索 |
 | 命令窗一闪而过、无任何输出 | 正常现象：MCP 走 stdio，启动脚本不打印提示文字 | 不要给 `bin\*.cmd` 加 `echo`；要看日志请在客户端侧查看该服务的 stderr |
 | `python.exe` 双击没反应 / 报缺少 DLL | 包被拷走时只复制了 `python\` 的一部分 | 整体复制 `concept-memory\` 目录；确认 `python\python311.dll`、`vcruntime140.dll`、`vcruntime140_1.dll` 都在 |

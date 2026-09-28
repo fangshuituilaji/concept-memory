@@ -14,6 +14,25 @@
 
 （下一次发布前在此累积改动；发布时把本节内容移入新的版本段并写上日期。）
 
+## [0.2.0] - 2026-09-28
+
+安装与升级体验版本：全部改动来自一次「删光本地环境 → 从 GitHub Releases 下载 v0.1.0 → 重新安装接入 ZCode」的端到端实测，无 MCP 接口与数据结构变更。
+
+### 新增
+
+- ZCode 客户端支持：`install/mcp-config-examples/zcode.json` 配置样例与 `INSTALL.md` 4.4 安装章节（工作区级 `.zcode\config.json`、`mcp.servers` 层级、包内 `python.exe` 直启 + `PYTHONPATH` 双段形态，实测可用）。
+- `README.md` 新增完整升级步骤，以及 github.com 被屏蔽时经 `api.github.com` 资产接口下载 zip 与校验和的通道说明。
+
+### 改进
+
+- `INSTALL.md` 故障排查表补充「删除 `.concept-memory\` 报文件被占用（Device or resource busy）」一行：MCP 服务进程握着 SQLite 句柄，先退客户端或结束包内 `python.exe` 再删。
+- `INSTALL.md` 步骤 4 补充实测坑位：路径含中文时，无 BOM 的 UTF-8 `.ps1` 会被 Windows PowerShell 5.1 按 ANSI 读取导致乱码。
+- `INSTALL.md` 步骤 7 与 `agent-rules-template.md` 明确：`AGENTS.md` 已有同名章节时跳过追加，避免重复安装产生重复章节。
+
+### 已知限制的变化
+
+- v0.1.0 记录的「尚未在真实 coding agent 会话中完成端到端验证」已完成：Windows 目标机上从 Releases 下载、解压自检、接入 ZCode、含中文路径项目首跑扫描，到真实在线检索返回与 `card_ids` 取卡全链路通过（2026-09-28，stderr 零输出）。
+
 ## [0.1.0] - 2026-09-23
 
 首个公开发布版本。发布形态是 Windows x64 离线包：解压即用，内置 Python 3.11 运行时，目标机器不需要装 Python、不需要联网，也不需要管理员权限。
@@ -40,5 +59,6 @@
 - TypeScript/JavaScript 的 Tree-sitter 支持属实验性扩展，不在第一版验收语言范围内。
 - 仅提供 Windows x64 离线包。
 
-[Unreleased]: ../../compare/v0.1.0...HEAD
+[Unreleased]: ../../compare/v0.2.0...HEAD
+[0.2.0]: ../../releases/tag/v0.2.0
 [0.1.0]: ../../releases/tag/v0.1.0

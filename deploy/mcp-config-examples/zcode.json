@@ -1,0 +1,17 @@
+{
+  "_comment": "ZCode（工作区级）MCP 配置片段。ZCode 读取 <你的项目>\\.zcode\\config.json 作为该项目的 MCP 配置，没有这个文件就新建。把 <PKG_ROOT> 替换成包解压后的绝对路径（例如 C:\\concept-memory），反斜杠双写或改正斜杠均可。注意 ZCode 的层级是 mcp.servers，不是 mcpServers。command 直接指向包内 python.exe（ZCode 下实测可用的形态），依赖路径由 env.PYTHONPATH 提供，两段用分号分隔、都要保留；改完必须重启 ZCode 才会加载。",
+  "_api_key_note": "DASHSCOPE_API_KEY 在 https://bailian.console.aliyun.com 获取，填进下方 value；也可以删掉这一项改用系统环境变量（同样需要重启 ZCode）。",
+  "_protocol_note": "该服务用标准输入输出通信，不监听端口，也不向 stdout 写任何文字。它对外提供两个工具：scan_codebase（传入项目绝对路径，建立或增量更新该项目的概念索引，索引写入被扫描项目的 .concept-memory\\ 目录）与 search_concepts（先传 query 检索概念卡片瘦身目录，再传 card_ids 一次读多张完整卡片）。",
+  "mcp": {
+    "servers": {
+      "concept-memory": {
+        "command": "<PKG_ROOT>\\python\\python.exe",
+        "args": ["-m", "memory_system.mcp_server"],
+        "env": {
+          "PYTHONPATH": "<PKG_ROOT>\\python\\Lib\\site-packages;<PKG_ROOT>\\src",
+          "DASHSCOPE_API_KEY": ""
+        }
+      }
+    }
+  }
+}
