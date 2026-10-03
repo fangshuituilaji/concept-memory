@@ -2,6 +2,10 @@
 
 本包是 Windows x64 离线包，**自带 Python 3.11 运行时与全部依赖**：目标机器不需要联网、不需要预装 Python、不需要 pip，也不需要管理员权限（只要包目录可读写）。
 
+已有完整包时保留下面的离线安装路径；希望用户只发一句会话指令时，先读包内 `install/ONE_MESSAGE_INSTALL.md`（仓库根 `INSTALL.md`）。该入口由 agent 自动下载、校验并注册当前客户端，不局限于下面列出的客户端。运行程序和依赖无需联网安装，但下载分发包、Key 验证、扫描合成与检索需要联网。
+
+包内 `install/configure_client.py` 提供配置合并、备份、幂等规则追加及标准 stdio 启动描述。必须确认当前宿主真实加载工具，不能用自己启动的临时客户端探针代替；写入配置后的状态是 `pending_client_reload`。宿主必须重启时明确告知并在重启后继续，不能提前声称安装完成。
+
 你的任务：把本包接到用户使用的 MCP 客户端上，把代码定位规则写进用户项目，并让用户在目标项目里成功跑通一次扫描。按下面 7 步顺序执行，**每一步都有可判定的通过条件；上一步不通过，禁止进入下一步**。
 
 ---
@@ -15,11 +19,14 @@
   python\python.exe                    包内 Python 解释器（没有 pip，不要用它跑 pip）
   python\Lib\site-packages\            全部第三方依赖
   python\DLLs\                         含 _sqlite3.pyd，存储层必需
-  src\memory_system\                   服务源码（17 个 .py）
+  src\memory_system\                   服务源码
   bin\memory-mcp.cmd                   MCP 服务启动入口（stdio 传输）
   bin\memory-web.cmd                   概念网络可视化页面
   bin\memory-concepts.cmd              命令行建索引（等价 memory-concepts 入口）
   install\INSTALL.md                   本文件
+  install\ONE_MESSAGE_INSTALL.md       跨客户端的一句会话安装入口
+  install\bootstrap.ps1                下载、校验与安全覆盖安装
+  install\configure_client.py          当前客户端注册与标准启动描述
   install\check_install.ps1            自动自检脚本（步骤 2 使用）
   install\agent-rules-template.md      代码定位规则模板（步骤 7 追加进用户项目 AGENTS.md）
   install\mcp-config-examples\         各客户端配置片段
@@ -109,30 +116,22 @@ if ($p.HasExited) {
 
 ---
 
-## 步骤 3：配置 DASHSCOPE_API_KEY
+## 步骤 3：确认 API Key 的首次配置方式
 
-**关键事实（决定怎么填）**：MCP 服务 `python -m memory_system.mcp_server` **不读 `.env` 文件**，只从下面两个来源读 `DASHSCOPE_API_KEY`：
+API Key 是扫描前的依赖。默认不要求用户把密钥交给 agent，也不必先设置环境变量；先完成客户端配置，再在步骤 6 打开的本地概念网络页面填写。
 
-1. MCP 客户端配置里为该服务写的 `env` 字段（推荐，作用域最小）；
-2. 进程的系统/用户环境变量（`setx DASHSCOPE_API_KEY "sk-xxx"`，之后必须重启客户端）。
+服务按以下顺序读取 Key：
 
-Key 由用户在阿里云百炼（DashScope）控制台创建：登录 <https://bailian.console.aliyun.com/> → 右上角个人中心 → API-KEY 管理 → 创建 API-KEY。它形如 `sk-` 开头的长字符串。
+1. MCP 客户端 `env.DASHSCOPE_API_KEY` 或进程环境变量，已有非空值优先使用；
+2. 当前用户的本机配置：Windows 为 `%LOCALAPPDATA%\concept-memory\credentials.json`，由 Windows DPAPI 加密，只能由当前账户解密。其他平台为用户配置目录中的私有文件；当前分发包仅支持 Windows x64。
 
-**填法 A（推荐，写进客户端配置的 `env` 字段）**：
+服务不自动读取项目或安装目录里的 `.env`。新用户可保留配置示例中的空 `DASHSCOPE_API_KEY`，或删除这一项；**不要填 `sk-...` 等非空占位符**，它会被当成已有 Key。
 
-```json
-"env": { "DASHSCOPE_API_KEY": "sk-用户提供的真实Key" }
-```
+没有 Key 时，`scan_codebase` 返回 `needs_api_key` 和本地网页 URL，不启动扫描。请让用户在该页面输入自己的阿里云百炼 qwen-flash Key；页面会在线验证，验证失败可重试，成功后保存并自动开始扫描。密钥只用于本机保存和向 DashScope 验证、调用模型；不出现在聊天、MCP 参数、网页响应或分发包中。
 
-**填法 B（系统环境变量）**：
+后续项目、服务重启和覆盖升级会复用已保存的 Key，用户无需重复填写。验收测试可用 `CONCEPT_MEMORY_CONFIG_DIR` 指向独立空目录，避免误用本机配置。
 
-```powershell
-setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
-```
-
-**通过条件**：填法 A 检查配置 JSON 里 `env.DASHSCOPE_API_KEY` 值以 `sk-` 开头且不是占位符；填法 B 在新开的终端里 `echo %DASHSCOPE_API_KEY%` 能打印出该 Key。
-
-**缺 Key 的后果**：MCP 服务仍能启动、工具列表也会出现，`scan_codebase` 仍有确定性的离线合成路径，但 **`search_concepts` 会直接失败并报 `Online retrieval requires the DashScope API key...`——它是纯在线检索，没有离线回退**。不要把缺失 Key 当成"安装成功但功能少一点"糊弄过去，要向用户说明。
+**通过条件**：步骤 6 的页面显示扫描进度并最终生成概念网络，随后在线检索返回非空卡片；仅能列出 MCP 工具不代表安装完成。
 
 ---
 
@@ -155,7 +154,7 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
     "concept-memory": {
       "command": "<PKG_ROOT>\\bin\\memory-mcp.cmd",
       "args": [],
-      "env": { "DASHSCOPE_API_KEY": "sk-用户提供的真实Key" }
+      "env": { "DASHSCOPE_API_KEY": "" }
     }
   }
 }
@@ -185,7 +184,7 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
     "concept-memory": {
       "command": "<PKG_ROOT>\\bin\\memory-mcp.cmd",
       "args": [],
-      "env": { "DASHSCOPE_API_KEY": "sk-用户提供的真实Key" },
+      "env": { "DASHSCOPE_API_KEY": "" },
       "disabled": false,
       "autoApprove": []
     }
@@ -211,7 +210,7 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
         "args": ["-m", "memory_system.mcp_server"],
         "env": {
           "PYTHONPATH": "<PKG_ROOT>\\python\\Lib\\site-packages;<PKG_ROOT>\\src",
-          "DASHSCOPE_API_KEY": "sk-用户提供的真实Key"
+          "DASHSCOPE_API_KEY": ""
         }
       }
     }
@@ -231,14 +230,14 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
     "concept-memory": {
       "command": "<PKG_ROOT>\\bin\\memory-mcp.cmd",
       "args": [],
-      "env": { "DASHSCOPE_API_KEY": "sk-用户提供的真实Key" }
+      "env": { "DASHSCOPE_API_KEY": "" }
     }
   }
 }
 ```
 
 - 若客户端的配置键名不是 `mcpServers`（例如 `servers`、`mcp.servers`），按该客户端文档改名，**只改键名，不改 `command`/`args`/`env` 三者的值**。
-- 若客户端要求 `command` 与 `args` 分离，可写成 `"command": "<PKG_ROOT>\\python\\python.exe"` + `"args": ["-m", "memory_system.mcp_server"]`，但**此时必须额外提供 `"env": { "PYTHONPATH": "<PKG_ROOT>\\python\\Lib\\site-packages;<PKG_ROOT>\\src", "DASHSCOPE_API_KEY": "sk-..." }`**，否则会报 `No module named memory_system`。用 `bin\memory-mcp.cmd` 则不需要手写 `PYTHONPATH`。
+- 若客户端要求 `command` 与 `args` 分离，可写成 `"command": "<PKG_ROOT>\\python\\python.exe"` + `"args": ["-m", "memory_system.mcp_server"]`，但**此时必须额外提供 `"env": { "PYTHONPATH": "<PKG_ROOT>\\python\\Lib\\site-packages;<PKG_ROOT>\\src", "DASHSCOPE_API_KEY": "" }`**，否则会报 `No module named memory_system`。用 `bin\memory-mcp.cmd` 则不需要手写 `PYTHONPATH`。
 - 环境变量名大小写敏感；Windows 路径在 JSON 里必须双写反斜杠或改用正斜杠。
 
 **通过条件**：配置文件能被 JSON 解析；`command` 指向的文件真实存在（`Test-Path` 返回 `True`）。
@@ -258,7 +257,7 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
 
 ## 步骤 6：让用户在目标项目上首跑扫描
 
-1. 让用户在自己的**代码项目根目录**（不是本包目录）里，通过客户端调用 `scan_codebase`，参数传该项目的绝对路径。
+1. 在真正的 agent 会话中，对用户的**代码项目根目录**（不是本包目录）调用 `scan_codebase(path=<项目绝对路径>)`。不要将参数误写成 `project_root`；不要用独立测试进程代替宿主接入验收。
 2. `scan_codebase` 会**立即返回**（扫描在后台进行），返回体形如：
 
    ```json
@@ -269,13 +268,14 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
    ```
 
    同时客户端所在机器会**自动弹出一个浏览器窗口**（`http://127.0.0.1:<端口>`）用于展示概念网络与扫描进度——这是预期行为，不要当成报错，也不要关掉承载它的服务进程。
-3. 首次扫描需要联网调用阿里云 qwen-flash 做概念合成，**耗时与项目规模成正比**（中等项目几分钟到十几分钟属正常），期间不要中断进程、不要重复发起扫描。
-4. **不要去轮询进度、也不要 sleep**：紧接着调用 `search_concepts`，它会自动等待后台扫描完成后再检索。
+3. 如果返回 `needs_api_key`，先让用户在返回 URL 的页面输入 Key；保持 MCP 进程运行。验证失败时在页面更正并重试，成功会自动启动扫描，**不要让用户把 Key 发进聊天或传给 MCP**。已有 Key 时直接进入扫描。
+4. 首次扫描需要联网调用阿里云 qwen-flash 做概念合成，**耗时与项目规模成正比**（中等项目几分钟到十几分钟属正常），期间不要中断进程、不要重复发起扫描。
+5. **用户完成 Key 配置后，不要去轮询进度、也不要 sleep**：紧接着调用 `search_concepts`，它会自动等待后台扫描完成后再检索。
 
 **通过条件（三项都满足才算安装完成）**：
 
-1. `scan_codebase` 返回的 `status` 为 `scanning`，且返回体里带 `database` 字段（不是异常、不是空结果）；
-2. `database` 指向的 `<用户项目>\.concept-memory\concepts.sqlite` 文件确实被创建（`Test-Path` 返回 `True`）；
+1. 已有 Key 时返回 `scanning`；缺 Key 时先返回 `needs_api_key`，用户在网页提交有效 Key 后自动开始扫描；
+2. `<用户项目>\.concept-memory\concepts.sqlite` 文件确实被创建（`Test-Path` 返回 `True`）；
 3. 紧接着调用 `search_concepts`，传一个自然语言概念或关键词（中文即可，例如「重试逻辑」），返回非空的概念卡片列表。
 
 **若第 3 项因为 API Key 无效或掉线而失败**（`search_concepts` 是纯在线检索，不做离线回退），先按步骤 3 修正 Key，再重试；此时不要重新解压包、也不要重装依赖。
@@ -306,7 +306,8 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
 2. 下载新版本 zip，解压出的 `concept-memory\` 覆盖旧目录（同名文件夹，直接替换里面的内容）。
 3. 重跑自检：`powershell -NoProfile -ExecutionPolicy Bypass -File "<PKG_ROOT>\install\check_install.ps1"`，确认结尾 PASS，且打印的`VERSION` 是刚装的新版本。
 4. 重新打开客户端，工具列表里仍应出现 `scan_codebase` 与 `search_concepts`。
-5. 在旧项目里再调用一次 `scan_codebase`：这是**增量重扫**，只重扫改动过的文件，概念卡片与真实使用连线都会保留。
+5. 已保存的用户配置目录不在安装包内，覆盖安装不会删除 Key；若升级后缺 Key，按步骤 3 在网页完成首次配置。
+6. 在旧项目里再调用一次 `scan_codebase`：这是**增量重扫**，只重扫改动过的文件，概念卡片与真实使用连线都会保留。
 
 **不要做的事**：不要把新包解压成另一个带版本号的目录再去改客户端配置（那样每次升级都得改配置）；不要为了升级删掉项目里的 `.concept-memory\`。
 
@@ -323,8 +324,8 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
 | 扫描很慢、卡在合成阶段 | 概念合成是在线调用阿里云 qwen-flash，速度取决于网络与项目规模，属预期行为 | 向用户说明预期耗时；确认网络可访问 dashscope；不要重复发起扫描；大项目按目录分批扫描 |
 | `scan_codebase` 刚返回 `status: scanning`，看似没做事 | 扫描在后台线程里跑，接口是立刻返回的 | 属预期。直接调用 `search_concepts`，它会自己等扫描结束，不要轮询、不要 sleep、不要重复发起扫描 |
 | 调用 `scan_codebase` 后机器上弹出浏览器窗口 | 服务会顺带启动本地概念网络页面（`http://127.0.0.1:<端口>`） | 属预期行为，不是报错；不要为此杀进程或改配置 |
-| `search_concepts` 报 `Online retrieval requires the DashScope API key...` | `search_concepts` 是纯在线检索，没有离线回退；Key 没送到该进程 | 按步骤 3 重填 Key（优先 `env` 字段），完全重启客户端后再试；`scan_codebase` 有离线退化路径，所以「能扫描」不代表 Key 配好了 |
-| 提示 `DASHSCOPE_API_KEY` 缺失或调不通 | Key 没写、写错位置（写进了 `.env` 而 MCP 不读 `.env`）、或写进系统变量后没重启客户端 | 按步骤 3 用 `env` 字段重填，Key 以 `sk-` 开头；用 `env` 方式后必须整体重启客户端 |
+| `search_concepts` 提示先配置 API Key | 扫描前置依赖尚未满足 | 打开 `scan_codebase` 返回的本地 URL，让用户在页面输入并验证 Key，随后重试检索；不把 Key 发进聊天 |
+| 页面验证 Key 失败或已有 Key 调不通 | Key 无效、模型权限或网络问题；非空环境变量优先于已保存的 Key | 在页面重试；若客户端原有 `env` 是无效 Key 或占位符，由用户移除或更正并重启客户端，再进入网页配置 |
 | 想删项目里的 `.concept-memory\` 重建索引，Windows 报「文件被占用 / Device or resource busy」 | MCP 服务进程（包内 `python.exe`）还握着 SQLite 文件句柄 | 先完全退出客户端（或结束包内 `python.exe` 进程）再删；删完在新会话里重新 `scan_codebase`，首次扫描会全量重建 |
 | `search_concepts` 返回空或报错 | 索引尚未建立，或重排不可用 | 先成功跑完一次 `scan_codebase` 再检索；确认 `DASHSCOPE_API_KEY` 有效；重扫后仍失败才回退本地检索 |
 | 命令窗一闪而过、无任何输出 | 正常现象：MCP 走 stdio，启动脚本不打印提示文字 | 不要给 `bin\*.cmd` 加 `echo`；要看日志请在客户端侧查看该服务的 stderr |
@@ -339,7 +340,7 @@ setx DASHSCOPE_API_KEY "sk-用户提供的真实Key"
 
 - [ ] `PKG_ROOT` 已确定，且包内 `bin\memory-mcp.cmd` 与 `src\memory_system\mcp_server.py` 存在。
 - [ ] 步骤 2 自检三条判据全部通过（版本号、sqlite 版本、`modules ok`）。
-- [ ] `DASHSCOPE_API_KEY` 已按步骤 3 的 A 或 B 填好，且不是占位符。
+- [ ] Key 已通过本地网页验证并保存，或已有有效环境变量；在线检索已验证。
 - [ ] 客户端配置文件已写入、JSON 可解析、`command` 指向存在的文件。
 - [ ] 客户端已完全重启，工具列表里出现 `scan_codebase` 与 `search_concepts`。
 - [ ] 用户在目标项目上首跑 `scan_codebase` 成功，项目下出现 `.concept-memory\`，`search_concepts` 返回非空结果。

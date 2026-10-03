@@ -1,0 +1,33 @@
+{
+  "date": "2026-10-02",
+  "real_credentials_used": true,
+  "stages": [
+    {
+      "version": "0.1.0",
+      "published_sha256": "4e9bca95fbf8f3bedfa8327cfdfc0c08e320509eede16468be7f448cbe93e5f4"
+    },
+    {
+      "version": "0.2.0",
+      "published_sha256": "9e72662209130e8d758019b318ca2c03ae06ed9b009e14e5f6fd75bedd7bdf12"
+    }
+  ],
+  "result": "PASS",
+  "cards_preserved": 39,
+  "usage_edges_preserved": 1,
+  "configuration_unchanged": true,
+  "self_check": "PASS",
+  "handshake_and_card_fetch": "PASS",
+  "online_query": "PASS: v0.2.0 package copy with current working-tree source completed a real online scan, 5 search hits, and 2 full card fetches using DashScope",
+  "online_validation": {
+    "package_base_version": "0.2.0",
+    "source": "current working-tree src copied over package",
+    "temporary_client_config": "real local API Key written only to isolated temporary config; value never logged",
+    "mcp_handshake_and_tools": "PASS",
+    "scan_search_and_card_fetch": "PASS",
+    "search_hits": 5,
+    "cards_fetched": 2,
+    "unicode_and_space_paths": "PASS",
+    "temporary_copy_and_key_config_removed": true
+  },
+  "fresh_source_setup": "covered separately by isolated credential tests; first-run browser submission is not part of this online upgrade check"
+}

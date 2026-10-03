@@ -12,6 +12,7 @@ from typing import Any
 from .activation import SpreadingActivationSearch, record_usage
 from . import __version__ as _VERSION
 from .cache import ConceptCache
+from .credentials import get_api_key, redact_error
 from .incremental import incremental_scan
 from .retrieval import QwenFlashRetriever, RetrievalConfig
 from .storage import ConceptStore
@@ -152,7 +153,7 @@ def _scan_worker(root: str) -> None:
             skipped_files=result.skipped_files,
         )
     except Exception as exc:  # the progress page is the user-visible surface
-        set_init_state("error", message=str(exc))
+        set_init_state("error", message=redact_error(exc))
 
 
 def scan_codebase(
@@ -184,14 +185,29 @@ def scan_codebase(
         if _web_server is None:
             _web_server = start_web_server(_database_path, scan_root=_project_root)
             _web_url = f"http://127.0.0.1:{_web_server.server_address[1]}"
+        _web_server.database_path = _database_path
+        _web_server.scan_root = _project_root
+        if not get_api_key():
+            _scan_thread = None
+            set_init_state("needs_api_key", done=0, total=0, current_file="", message="")
+            if open_browser:
+                try:
+                    webbrowser.open(_web_url)
+                except Exception:
+                    pass
+            return {
+                "status": "needs_api_key", "project_root": root, "url": _web_url,
+                "note": "Enter the DashScope API key on the local page; scanning starts after submission. "
+                        "Do not ask the user to send the key in chat or pass it to an MCP tool.",
+            }
+        set_init_state("scanning", done=0, total=0, current_file="", message="")
+        _scan_thread = threading.Thread(target=_scan_worker, args=(root,), daemon=True)
+        _scan_thread.start()
         if open_browser:
             try:
                 webbrowser.open(_web_url)
             except Exception:
                 pass  # headless hosts still get the URL in the tool result
-        set_init_state("scanning", done=0, total=0, current_file="")
-        _scan_thread = threading.Thread(target=_scan_worker, args=(root,), daemon=True)
-        _scan_thread.start()
     return {
         "status": "scanning",
         "project_root": root,
@@ -222,6 +238,11 @@ def _wait_for_scan(timeout: float | None = None) -> None:
     while True:
         with _lifecycle_lock:
             thread = _scan_thread
+            if get_init_state()["phase"] == "needs_api_key":
+                raise RuntimeError(
+                    "API key setup is required before scanning; enter it on the local page at "
+                    + _web_url + ". Do not send the key through chat or MCP tools."
+                )
         if thread is None or not thread.is_alive():
             return
         remaining = deadline - time.monotonic()
@@ -433,7 +454,10 @@ def build_server() -> Any:
                 "keeps accumulated card history. Returns immediately and "
                 "opens a live progress page; search_concepts automatically "
                 "waits for an in-progress scan, so you can call it right "
-                "away without sleeping or polling."
+                "away without sleeping or polling. If no API key is configured, "
+                "returns needs_api_key: ask the user to enter it on the local "
+                "page, then retry search_concepts after setup. Never request "
+                "the key in chat or pass it through MCP tools."
             ),
             inputSchema={
                 "type": "object",
@@ -532,4 +556,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Page requests import this module. Keep their scan lifecycle identical to
+    # the stdio service when launched with python -m memory_system.mcp_server.
+    import sys
+
+    sys.modules["memory_system.mcp_server"] = sys.modules[__name__]
     main()

@@ -1021,6 +1021,9 @@ def main(argv=None) -> int:
     examples_src = deploy_path / "mcp-config-examples"
     checker_src = deploy_path / "check_install.ps1"
     rules_src = deploy_path / "agent-rules-template.md"
+    configure_src = deploy_path / "configure_client.py"
+    bootstrap_src = deploy_path / "bootstrap.ps1"
+    entry_src = project_root / "INSTALL.md"
     changelog_src = project_root / "CHANGELOG.md"
     missing = []
     if not install_src.is_file():
@@ -1031,6 +1034,9 @@ def main(argv=None) -> int:
         missing.append(str(checker_src))
     if not rules_src.is_file():
         missing.append(str(rules_src))
+    for required in (configure_src, bootstrap_src, entry_src):
+        if not required.is_file():
+            missing.append(str(required))
     if not changelog_src.is_file():
         missing.append(str(changelog_src))
     if missing:
@@ -1042,6 +1048,11 @@ def main(argv=None) -> int:
     shutil.copy2(install_src, pkg_root / "install" / "INSTALL.md")
     ensure_utf8_bom(checker_src, pkg_root / "install" / "check_install.ps1")
     shutil.copy2(rules_src, pkg_root / "install" / "agent-rules-template.md")
+    shutil.copy2(configure_src, pkg_root / "install" / "configure_client.py")
+    ensure_utf8_bom(bootstrap_src, pkg_root / "install" / "bootstrap.ps1")
+    shutil.copy2(entry_src, pkg_root / "install" / "ONE_MESSAGE_INSTALL.md")
+    shutil.copy2(entry_src, pkg_root / "INSTALL.md")
+    shutil.copy2(project_root / "README.md", pkg_root / "README.md")
     shutil.copy2(changelog_src, pkg_root / "CHANGELOG.md")
     (pkg_root / "VERSION").write_text(version + "\n", encoding="utf-8")
     example_count = copytree(examples_src, pkg_root / "install" / "mcp-config-examples")

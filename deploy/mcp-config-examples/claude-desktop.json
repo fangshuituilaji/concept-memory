@@ -1,6 +1,6 @@
 {
   "_comment": "Claude Desktop（Windows）配置片段。完整文件路径为 %APPDATA%\\Claude\\claude_desktop_config.json，一般位于 C:\\Users\\<你的用户名>\\AppData\\Roaming\\Claude\\claude_desktop_config.json。若该文件已存在，请把下面 mcpServers 里的 concept-memory 这一节合并进原有 JSON，不要覆盖其它服务；把 <PKG_ROOT> 替换成包解压后的绝对路径（例如 D:\\tools\\concept-memory），路径里的反斜杠写成双反斜杠。路径含空格或中文时同样保持引号完整、不要去掉引号。修改后需要完全退出并重启 Claude Desktop。",
-  "_api_key_note": "DASHSCOPE_API_KEY 在 https://bailian.console.aliyun.com 获取，或直接填在这里的 value 中。环境变量在此处配置后，MCP 服务无需读取任何 .env 文件。",
+  "_api_key_note": "默认留空，首次 scan_codebase 会打开本地网页，用户在网页输入并验证 Key 后自动保存和扫描。已有 DASHSCOPE_API_KEY 环境变量优先使用；不要填写非空占位符，也不要把真实 Key 发给 agent。",
   "mcpServers": {
     "concept-memory": {
       "command": "<PKG_ROOT>\\bin\\memory-mcp.cmd",

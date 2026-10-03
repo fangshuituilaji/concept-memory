@@ -137,7 +137,11 @@ class QwenFlashRetrieverTests(unittest.TestCase):
         retriever = QwenFlashRetriever()
         store = self._store_with(_card("甲", "第一个。"))
         try:
-            with mock.patch.dict(os.environ, clear=True):
+            # A user's saved local credential must not make this negative
+            # retrieval test accidentally call the real provider.
+            with mock.patch.dict(os.environ, clear=True), mock.patch(
+                "memory_system.credentials.get_api_key", return_value=""
+            ):
                 os.environ.pop("DASHSCOPE_API_KEY", None)
                 with self.assertRaises(RuntimeError):
                     retriever.search(store, "任意查询", limit=5)

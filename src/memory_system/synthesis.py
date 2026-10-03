@@ -82,7 +82,9 @@ class DashScopeQwenSynthesizer:
         self.config = config or ConceptSynthesisConfig()
 
     def synthesize(self, facts: SourceFacts) -> list[ConceptDraft]:
-        api_key = os.getenv(self.config.api_key_env)
+        from .credentials import get_api_key
+
+        api_key = get_api_key(self.config.api_key_env)
         if not api_key:
             raise RuntimeError(
                 f"Missing DashScope API key environment variable: {self.config.api_key_env}"
@@ -94,7 +96,7 @@ class DashScopeQwenSynthesizer:
                 "DashScope SDK is not installed; install the optional 'dashscope' dependency."
             ) from exc
 
-        # The key is read from the environment only and is never placed in a
+        # The key is read from the environment or user-local storage, never placed in a
         # prompt, card, exception message, or log.
         dashscope.api_key = api_key
         response = dashscope.Generation.call(
@@ -215,9 +217,11 @@ class OfflineConceptSynthesizer:
 def create_default_synthesizer(
     config: ConceptSynthesisConfig | None = None,
 ) -> ConceptSynthesizer:
-    """Select Qwen-Flash when credentials exist, otherwise stay offline."""
+    """Select Qwen-Flash when environment or saved credentials exist."""
+    from .credentials import get_api_key
+
     resolved = config or ConceptSynthesisConfig()
-    if os.getenv(resolved.api_key_env):
+    if get_api_key(resolved.api_key_env):
         return DashScopeQwenSynthesizer(resolved)
     return OfflineConceptSynthesizer(resolved)
 

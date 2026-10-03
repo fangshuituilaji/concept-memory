@@ -317,6 +317,9 @@ Test-RequiredItem -RelativePath '.env.example' -Kind 'File' -Description '环境
 Test-RequiredItem -RelativePath 'VERSION' -Kind 'File' -Description '包版本号文件'
 Test-RequiredItem -RelativePath 'CHANGELOG.md' -Kind 'File' -Description '变更记录'
 Test-RequiredItem -RelativePath 'install\agent-rules-template.md' -Kind 'File' -Description '代码定位规则模板'
+Test-RequiredItem -RelativePath 'install\ONE_MESSAGE_INSTALL.md' -Kind 'File' -Description '统一安装入口'
+Test-RequiredItem -RelativePath 'install\bootstrap.ps1' -Kind 'File' -Description '下载校验安装程序'
+Test-RequiredItem -RelativePath 'install\configure_client.py' -Kind 'File' -Description '客户端注册程序'
 
 # 配置样例目录允许出现在 deploy\ 或 install\ 两处之一
 $exampleDir = ''

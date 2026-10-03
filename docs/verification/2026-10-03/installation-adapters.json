@@ -1,0 +1,47 @@
+{
+  "bundled_python": true,
+  "temporary_configs_only": true,
+  "actual_host_registration": false,
+  "results": [
+    {
+      "client": "codex",
+      "status": "pending_client_reload",
+      "repeatable": true
+    },
+    {
+      "client": "claude-code",
+      "status": "pending_client_reload",
+      "repeatable": true
+    },
+    {
+      "client": "claude-desktop",
+      "status": "pending_client_reload",
+      "repeatable": true
+    },
+    {
+      "client": "cursor",
+      "status": "pending_client_reload",
+      "repeatable": true
+    },
+    {
+      "client": "cline",
+      "status": "pending_client_reload",
+      "repeatable": true
+    },
+    {
+      "client": "zcode",
+      "status": "pending_client_reload",
+      "repeatable": true
+    },
+    {
+      "client": "vscode",
+      "status": "pending_client_reload",
+      "repeatable": true
+    },
+    {
+      "client": "opencode",
+      "status": "pending_client_reload",
+      "repeatable": true
+    }
+  ]
+}

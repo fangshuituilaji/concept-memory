@@ -114,7 +114,9 @@ class QwenFlashRetriever:
         return ranked
 
     def _call(self, messages: list[dict[str, str]]) -> str:
-        api_key = os.getenv(self.config.api_key_env)
+        from .credentials import get_api_key
+
+        api_key = get_api_key(self.config.api_key_env)
         if not api_key:
             raise RuntimeError(
                 "Online retrieval requires the DashScope API key environment "
