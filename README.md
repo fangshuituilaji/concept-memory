@@ -20,13 +20,13 @@
 
 把目录交给 agent 即可；它读取目录里的 [INSTALL.md](INSTALL.md)，使用随包运行时自检并接入当前客户端。没有 Key 时在本地网页输入，不需要另一份开发工作区或专门的测试说明。源代码目录本身不含运行时，需要先取得完整分发包。
 
-一句会话指令安装入口已在当前源码实现，**新版分发包尚未发布到 Releases**。现有公开 v0.2.0 包仍是旧安装流程；发布包含新安装程序的版本后，在项目的 agent 会话发送：
+从 v0.3.0 起支持一句会话指令安装。在项目的 agent 会话发送：
 
 > 请读取 https://github.com/fangshuituilaji/concept-memory/blob/main/INSTALL.md ，为当前项目安装并接入 Concept Memory，完成自检后开始使用。
 
 agent 会下载并校验官方包、接入当前客户端并验证实际工具调用。已有 Key 会复用；没有时只在本地网页输入。客户端需要重启时会明确提示。支持本机文件操作及 stdio MCP 的其他 agent 也可按统一说明接入，不受客户端名单限制。完整流程见 [安装入口](INSTALL.md)。
 
-当前公开版本仍可到 [Releases](../../releases/latest) 下载、解压，再让 agent 读取包内 `install/INSTALL.md` 安装；v0.2.0 的 Key 配置方式以其包内说明为准。本工作区未发布源码已增加网页 Key 配置。
+也可到 [Releases](../../releases/latest) 下载、解压，再让 agent 读取包内 `INSTALL.md` 安装。v0.3.0 支持网页 Key 配置；旧 v0.2.0 的方式以其包内说明为准。
 
 **github.com 打不开？** 新安装程序默认走 GitHub API 下载通道。旧包可先读取 `https://api.github.com/repos/fangshuituilaji/concept-memory/releases/latest` 获取 zip 与 `.zip.sha256` 的资产 id，再通过 `https://api.github.com/repos/fangshuituilaji/concept-memory/releases/assets/<id>`、请求头 `Accept: application/octet-stream` 下载并校验。
 
