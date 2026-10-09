@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from memory_system.cli import _load_dotenv, main
@@ -28,14 +29,41 @@ class CliSmokeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "sample.py"
             source.write_text("def greet(name):\n    return name\n", encoding="utf-8")
-            with patch("sys.stdout") as stdout:
-                exit_code = main([str(source), "--offline"])
+            response = SimpleNamespace(
+                output=SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(
+                                content=(
+                                    '{"concepts":[{"name":"问候",'
+                                    '"definition":"生成问候文本",'
+                                    '"background":"函数返回问候文本",'
+                                    '"evidence":["greet"]}]}'
+                                )
+                            )
+                        )
+                    ]
+                )
+            )
+            with patch("memory_system.credentials.get_api_key", return_value="unit-test-key"), \
+                 patch("dashscope.Generation.call", return_value=response) as provider, \
+                 patch("sys.stdout") as stdout:
+                exit_code = main([str(source)])
 
             self.assertEqual(exit_code, 0)
             payload = "".join(call.args[0] for call in stdout.write.call_args_list)
             cards = json.loads(payload)
             self.assertTrue(cards)
             self.assertEqual(cards[0]["location"]["file_path"], "sample.py")
+            self.assertEqual(provider.call_args.kwargs["model"], "qwen-flash")
+
+    def test_legacy_offline_generation_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "sample.py"
+            source.write_text("def greet(name):\n    return name\n", encoding="utf-8")
+            with self.assertRaises(SystemExit) as result:
+                main([str(source), "--offline"])
+        self.assertEqual(result.exception.code, 2)
 
 
 if __name__ == "__main__":

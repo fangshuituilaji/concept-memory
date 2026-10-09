@@ -5,22 +5,17 @@ from .synthesis import (
     ConceptSynthesisConfig,
     ConceptSynthesizer,
     DashScopeQwenSynthesizer,
-    OfflineConceptSynthesizer,
     create_default_synthesizer,
 )
 
 ModelConfig = ConceptSynthesisConfig
 OpenAICompatibleEnricher = DashScopeQwenSynthesizer
-NoOpEnricher = OfflineConceptSynthesizer
-
 __all__ = [
     "ConceptDraft",
     "ConceptSynthesisConfig",
     "ConceptSynthesizer",
     "DashScopeQwenSynthesizer",
     "ModelConfig",
-    "NoOpEnricher",
-    "OfflineConceptSynthesizer",
     "OpenAICompatibleEnricher",
     "create_default_synthesizer",
 ]

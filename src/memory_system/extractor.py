@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
+from .languages import LANGUAGES, load_language, resolve_language
 from .readers import CodeFile
 
 
@@ -47,12 +48,15 @@ class SourceFacts:
     module: str
     source_digest: str
     symbols: tuple[SymbolFact, ...]
+    language_id: str | None = None
 
     def to_prompt_text(self, *, max_source_chars: int = 120_000) -> str:
         source = self.file.text
         truncated = len(source) > max_source_chars
         if truncated:
             source = source[:max_source_chars]
+        spec = LANGUAGES.get(self.language_id or "") or resolve_language(self.file.path)
+        fence_tag = spec.fence_tag if spec is not None else "text"
         symbol_index = "\n".join(
             f"- {symbol.qualified_name} [{symbol.kind}] "
             f"lines {symbol.start_line}-{symbol.end_line}: {symbol.signature}"
@@ -64,7 +68,7 @@ class SourceFacts:
             f"文件: {self.file.relative_path}\n"
             f"模块: {self.module}\n"
             f"符号索引:\n{symbol_index or '- 无显式类或函数符号'}\n\n"
-            f"源码:\n```python\n{source}\n```{truncation_note}"
+            f"源码:\n```{fence_tag}\n{source}\n```{truncation_note}"
         )
 
 
@@ -91,6 +95,7 @@ class PythonSourceAnalyzer:
             module=_module_name(code_file.relative_path),
             source_digest=sha256(code_file.text.encode("utf-8")).hexdigest(),
             symbols=tuple(symbols),
+            language_id="python",
         )
 
     def _visit(
@@ -153,11 +158,6 @@ _TS_SYMBOL_TYPES = frozenset({
     "method_definition",
     "lexical_declaration",
 })
-_PY_LANG = None
-_TS_LANG = None
-_JS_LANG = None
-
-
 def _analyze_markdown(code_file: CodeFile) -> SourceFacts:
     """Anchor markdown concepts on headings; the body feeds the synthesizer."""
     symbols: list[SymbolFact] = []
@@ -189,28 +189,8 @@ def _analyze_markdown(code_file: CodeFile) -> SourceFacts:
         module=_module_name(code_file.relative_path),
         source_digest=sha256(source_bytes).hexdigest(),
         symbols=tuple(symbols),
+        language_id="markdown",
     )
-
-
-def _get_language(suffix: str):
-    global _PY_LANG, _TS_LANG, _JS_LANG
-    from tree_sitter import Language
-    if suffix == ".py":
-        if _PY_LANG is None:
-            import tree_sitter_python as tspython
-            _PY_LANG = Language(tspython.language())
-        return _PY_LANG
-    if suffix in (".ts", ".tsx"):
-        if _TS_LANG is None:
-            import tree_sitter_typescript as tsts
-            _TS_LANG = Language(tsts.language_typescript())
-        return _TS_LANG
-    if suffix in (".js", ".mjs"):
-        if _JS_LANG is None:
-            import tree_sitter_javascript as tsjs
-            _JS_LANG = Language(tsjs.language())
-        return _JS_LANG
-    return None
 
 
 class TreeSitterSourceAnalyzer:
@@ -224,18 +204,65 @@ class TreeSitterSourceAnalyzer:
         self._python = PythonSourceAnalyzer()
 
     def analyze(self, code_file: CodeFile) -> SourceFacts:
-        # Python stays on the stdlib AST path so the first-phase Python install
-        # does not require the optional Tree-sitter extras.
-        if code_file.path.suffix == ".py":
-            return self._python.analyze(code_file)
-        if code_file.path.suffix == ".md":
-            return _analyze_markdown(code_file)
-        lang = _get_language(code_file.path.suffix)
-        if lang is None:
+        spec = resolve_language(code_file.path)
+        if spec is None:
             raise ConceptExtractionError(
-                f"Unsupported language: {code_file.path.suffix}"
+                f"Unsupported language: {code_file.path.suffix or '<none>'}"
             )
-        return self._analyze_ts_js(code_file, lang)
+        if spec.language_id == "python":
+            return self._python.analyze(code_file)
+        if spec.language_id == "markdown":
+            return _analyze_markdown(code_file)
+        from .parsers.safety import defer_gc_for_tree_sitter
+
+        with defer_gc_for_tree_sitter():
+            return self._analyze_tree_sitter(code_file, spec)
+
+    def _analyze_tree_sitter(self, code_file: CodeFile, spec) -> SourceFacts:
+        if spec.language_id == "c-header":
+            from .parsers.c import analyze_header
+
+            return analyze_header(code_file)
+        if spec.grammar_candidates:
+            raise ConceptExtractionError(
+                f"Ambiguous source language for {code_file.relative_path}: "
+                "header dialect selection is required"
+            )
+        if spec.language_id in {"typescript", "tsx"}:
+            from .parsers.typescript import analyze as analyze_typescript
+
+            return analyze_typescript(code_file, spec.language_id)
+        if spec.language_id == "javascript":
+            from .parsers.javascript import analyze as analyze_javascript
+
+            return analyze_javascript(code_file)
+        if spec.language_id == "java":
+            from .parsers.java import analyze as analyze_java
+
+            return analyze_java(code_file)
+        if spec.language_id == "go":
+            from .parsers.go import analyze as analyze_go
+
+            return analyze_go(code_file)
+        if spec.language_id == "rust":
+            from .parsers.rust import analyze as analyze_rust
+
+            return analyze_rust(code_file)
+        if spec.language_id == "c":
+            from .parsers.c import analyze as analyze_c
+
+            return analyze_c(code_file)
+        if spec.language_id == "cpp":
+            from .parsers.cpp import analyze as analyze_cpp
+
+            return analyze_cpp(code_file)
+        if spec.language_id == "csharp":
+            from .parsers.csharp import analyze as analyze_csharp
+
+            return analyze_csharp(code_file)
+        raise ConceptExtractionError(
+            f"Parser is not implemented yet for {spec.language_id}"
+        )
 
     def _analyze_ts_js(self, code_file: CodeFile, lang) -> SourceFacts:
         from tree_sitter import Parser

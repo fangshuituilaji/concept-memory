@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from .languages import SUPPORTED_EXTENSIONS
 
 
-# Phase 1 acceptance is Python-first. TS/JS can be enabled explicitly with
-# ``extensions=`` after installing the optional tree-sitter extra. Markdown
-# documents join by default because agents keep project knowledge in them.
-DEFAULT_EXTENSIONS = frozenset({".py", ".md"})
+# Keep default discovery aligned with the canonical analyzer registry.
+DEFAULT_EXTENSIONS = SUPPORTED_EXTENSIONS
 DEFAULT_IGNORED_DIRECTORIES = frozenset(
     {
         ".git",
@@ -22,7 +21,13 @@ DEFAULT_IGNORED_DIRECTORIES = frozenset(
         "__pycache__",
         "build",
         "dist",
+        ".concept-memory",
+        ".next",
+        ".nuxt",
+        "coverage",
         "node_modules",
+        "obj",
+        "target",
         "venv",
     }
 )
@@ -48,18 +53,29 @@ def discover_code_files(
     if not target.exists():
         raise FileNotFoundError(f"Analysis path does not exist: {target}")
     if target.is_file():
-        if target.suffix not in extensions:
+        if not _is_supported_source(target, extensions):
             raise ValueError(f"Unsupported source extension: {target.suffix or '<none>'}")
         return [target]
 
     files: list[Path] = []
+    ignored = {part.casefold() for part in ignored_directories}
     for candidate in target.rglob("*"):
-        if not candidate.is_file() or candidate.suffix not in extensions:
+        if not candidate.is_file() or not _is_supported_source(candidate, extensions):
             continue
-        if any(part in ignored_directories for part in candidate.relative_to(target).parts[:-1]):
+        if any(
+            part.casefold() in ignored
+            for part in candidate.relative_to(target).parts[:-1]
+        ):
             continue
         files.append(candidate)
     return sorted(files, key=lambda item: item.as_posix())
+
+
+def _is_supported_source(path: Path, extensions: frozenset[str]) -> bool:
+    if path.name.casefold().endswith((".min.js", ".min.mjs")):
+        return False
+    normalized = {extension.casefold() for extension in extensions}
+    return path.suffix in extensions or path.suffix.casefold() in normalized
 
 
 def read_code_file(file_path: Path, *, root: Path) -> CodeFile:

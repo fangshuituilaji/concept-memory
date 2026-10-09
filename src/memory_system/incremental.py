@@ -21,6 +21,7 @@ treated as a rename, so its cards survive the move as well.
 from __future__ import annotations
 
 import sqlite3
+import json
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
@@ -29,10 +30,12 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .cache import ConceptCache
+from .languages import parser_signature_for_path
 from .models import ConceptCard
 from .pipeline import analyze_path
 from .readers import discover_code_files
 from .storage import ConceptStore
+from .synthesis import ConceptSynthesisConfig
 
 # A renamed draft counts as the same concept only above this name similarity
 # and only while still citing at least one identical evidence symbol.
@@ -47,6 +50,7 @@ class FileStateRecord:
     mtime: float
     size: int
     source_digest: str
+    analysis_signature: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,7 +74,7 @@ class FileStateStore:
         connection = self._connect()
         try:
             rows = connection.execute(
-                "SELECT path, mtime, size, source_digest FROM file_state"
+                "SELECT path, mtime, size, source_digest, analysis_signature FROM file_state"
             ).fetchall()
         finally:
             connection.close()
@@ -80,6 +84,7 @@ class FileStateStore:
                 mtime=float(row["mtime"]),
                 size=int(row["size"]),
                 source_digest=row["source_digest"],
+                analysis_signature=row["analysis_signature"],
             )
             for row in rows
         }
@@ -102,15 +107,18 @@ class FileStateStore:
                 for record in records:
                     connection.execute(
                         """
-                        INSERT INTO file_state(path, mtime, size, source_digest, scanned_at)
-                        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        INSERT INTO file_state(
+                            path, mtime, size, source_digest, analysis_signature, scanned_at
+                        ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         ON CONFLICT(path) DO UPDATE SET
                             mtime = excluded.mtime,
                             size = excluded.size,
                             source_digest = excluded.source_digest,
+                            analysis_signature = excluded.analysis_signature,
                             scanned_at = CURRENT_TIMESTAMP
                         """,
-                        (record.path, record.mtime, record.size, record.source_digest),
+                        (record.path, record.mtime, record.size, record.source_digest,
+                         record.analysis_signature),
                     )
                 if keep_paths is not None:
                     keep = set(keep_paths)
@@ -134,10 +142,16 @@ class FileStateStore:
                 mtime REAL NOT NULL,
                 size INTEGER NOT NULL,
                 source_digest TEXT NOT NULL,
+                analysis_signature TEXT,
                 scanned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(file_state)").fetchall()
+        }
+        if "analysis_signature" not in columns:
+            connection.execute("ALTER TABLE file_state ADD COLUMN analysis_signature TEXT")
         connection.commit()
         return connection
 
@@ -147,6 +161,30 @@ def _source_digest(file_path: Path) -> str:
 
     text = file_path.read_text(encoding="utf-8")
     return sha256(text.encode("utf-8")).hexdigest()
+
+
+def file_analysis_signature(
+    file_path: str | Path,
+    config: object | None = None,
+    synthesizer: object | None = None,
+) -> str:
+    """Fingerprint parser and synthesis settings that can change generated cards."""
+
+    resolved_config = (
+        config
+        or getattr(synthesizer, "config", None)
+        or ConceptSynthesisConfig()
+    )
+    to_dict = getattr(resolved_config, "to_dict", None)
+    settings = to_dict() if callable(to_dict) else {}
+    payload = {
+        "parser_signature": parser_signature_for_path(file_path),
+        "synthesis_config": settings,
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 def _evidence_symbols(card: ConceptCard) -> frozenset[str]:
@@ -266,9 +304,11 @@ def incremental_scan(
             del rel_files[rel]
             continue
         record = states.get(rel)
+        signature = file_analysis_signature(file_path, config, synthesizer)
         if (
             record is not None
             and rel in stored_paths
+            and record.analysis_signature == signature
             and record.mtime == stat.st_mtime
             and record.size == stat.st_size
         ):
@@ -281,16 +321,23 @@ def incremental_scan(
             # cards, retry on the next scan instead of aborting the rescan.
             unchanged.append(rel)
             continue
-        if record is not None and record.source_digest == digest and rel in stored_paths:
+        if (
+            record is not None
+            and record.source_digest == digest
+            and record.analysis_signature == signature
+            and rel in stored_paths
+        ):
             # Stat changed but content is identical (git rewrote the file);
             # remember the new stat so the fast path hits next time.
             unchanged.append(rel)
             refreshed_records.append(
-                FileStateRecord(rel, stat.st_mtime, stat.st_size, digest)
+                FileStateRecord(rel, stat.st_mtime, stat.st_size, digest, signature)
             )
             continue
         changed.append(file_path)
-        changed_records.append(FileStateRecord(rel, stat.st_mtime, stat.st_size, digest))
+        changed_records.append(
+            FileStateRecord(rel, stat.st_mtime, stat.st_size, digest, signature)
+        )
 
     new_cards: list[ConceptCard] = []
     if changed:

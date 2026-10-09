@@ -136,14 +136,17 @@ def _scan_worker(root: str) -> None:
             set_init_state("scanning", done=done, total=total, current_file=current_file)
 
         assert _store is not None and _cache is not None
-        result = incremental_scan(
-            root,
-            store=_store,
-            database_path=_database_path,
-            cache=_cache,
-            progress_callback=_progress,
-            store_lock=_lock,
-        )
+        from .parsers.safety import defer_gc_for_tree_sitter
+
+        with defer_gc_for_tree_sitter(collect_on_exit=True):
+            result = incremental_scan(
+                root,
+                store=_store,
+                database_path=_database_path,
+                cache=_cache,
+                progress_callback=_progress,
+                store_lock=_lock,
+            )
         set_init_state(
             "done",
             concept_count=len(result.cards),

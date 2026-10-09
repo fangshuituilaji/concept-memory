@@ -84,8 +84,8 @@ def kill_tree(root_pid: int) -> None:
 
 def main() -> int:
     watchdog(300.0)
-    zip_path = Path(sys.argv[1])
-    target = Path(sys.argv[2])
+    zip_path = Path(sys.argv[1]).expanduser().resolve()
+    target = Path(sys.argv[2]).expanduser().resolve()
     if target.exists():
         shutil.rmtree(target)
     target.mkdir(parents=True)

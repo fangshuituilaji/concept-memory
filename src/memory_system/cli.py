@@ -10,7 +10,7 @@ from pathlib import Path
 from .pipeline import analyze_path, cards_to_json
 from .security import JsonlAuditRecorder, SecurityPolicy
 from .storage import ConceptStore
-from .synthesis import ConceptSynthesisConfig, OfflineConceptSynthesizer
+from .synthesis import ConceptSynthesisConfig
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="Use the deterministic fallback instead of DashScope",
+        help="Deprecated: concept generation requires Qwen-Flash",
     )
     parser.add_argument(
         "--cache",
@@ -73,29 +73,30 @@ def main(argv: list[str] | None = None) -> int:
     """Run the legacy ``memory-concepts`` command unchanged."""
 
     _load_dotenv()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.offline:
+        parser.error("--offline is no longer supported; concept generation requires qwen-flash")
     config = ConceptSynthesisConfig(
         model=args.model,
         target_concepts=args.target_concepts,
         max_concepts=args.max_concepts,
     )
-    synthesizer = OfflineConceptSynthesizer(config) if args.offline else None
     target = Path(args.path).expanduser().resolve()
     root = target if target.is_dir() else target.parent
     policy = SecurityPolicy(
         root=root,
-        source_sending_policy="offline" if args.offline else "online",
+        source_sending_policy="online",
         allowlist=args.allow_sensitive,
     )
     audit = JsonlAuditRecorder(args.audit_log) if args.audit_log else None
     cards = analyze_path(
         args.path,
-        synthesizer=synthesizer,
         config=config,
         cache_path=args.cache,
         security_policy=policy,
         audit_recorder=audit,
-        source_sending_policy="offline" if args.offline else "online",
+        source_sending_policy="online",
     )
     payload = cards_to_json(cards)
     if args.output:

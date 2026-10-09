@@ -204,6 +204,7 @@ else {
     $importSnippet = @'
 import importlib
 import sys
+from pathlib import Path
 
 results = []
 for name in ['sqlite3', 'mcp', 'dashscope', 'dotenv', 'memory_system.mcp_server']:
@@ -216,6 +217,33 @@ for name in ['sqlite3', 'mcp', 'dashscope', 'dotenv', 'memory_system.mcp_server'
         if missing:
             detail = detail + ' [缺少的模块: ' + str(missing) + ']'
         results.append('FAIL|' + name + '|' + detail)
+
+try:
+    from memory_system.extractor import TreeSitterSourceAnalyzer
+    from memory_system.readers import CodeFile
+    samples = [
+        ('Python', 'sample.py', 'def smoke_python(): return 1\n'),
+        ('Markdown', 'notes.md', '# Smoke\n'),
+        ('TypeScript', 'sample.ts', 'function smoke_ts(): number { return 1; }\n'),
+        ('TSX', 'sample.tsx', 'const Smoke = () => <main />;\n'),
+        ('JavaScript', 'sample.js', 'function smoke_js() { return 1; }\n'),
+        ('JSX', 'sample.jsx', 'export default function Smoke() { return <main />; }\n'),
+        ('Java', 'Sample.java', 'class Sample { void smoke() {} }\n'),
+        ('Go', 'sample.go', 'package sample\nfunc smoke() {}\n'),
+        ('Rust', 'sample.rs', 'fn smoke() {}\n'),
+        ('C', 'sample.c', 'int smoke(void) { return 1; }\n'),
+        ('C++ header', 'sample.h', 'template<class T> class Store { public: T get(); };\n'),
+        ('C++', 'sample.cpp', 'namespace sample { class Store {}; }\n'),
+        ('C#', 'Sample.cs', 'class Sample { void Smoke() {} }\n'),
+    ]
+    analyzer = TreeSitterSourceAnalyzer()
+    for label, filename, source in samples:
+        facts = analyzer.analyze(CodeFile(Path(filename), filename, source))
+        if not facts.symbols:
+            raise RuntimeError(label + ' parser returned no symbols')
+    results.append('OK|all language grammars|')
+except BaseException as exc:
+    results.append('FAIL|all language grammars|' + type(exc).__name__ + ': ' + str(exc))
 
 print('PYTHON|' + sys.version.split()[0])
 print('EXECUTABLE|' + sys.executable)
@@ -265,12 +293,12 @@ print('CHECK|' + '|'.join(results))
         Write-Info $probeText.Trim()
     }
     else {
-        $expected = 5
+        $expected = 6
         if ($checkedModules -lt $expected) {
             Write-Fail "只收到 $checkedModules 项导入结果（应为 $expected 项）。"
         }
         elseif ($FailCount -eq 0) {
-            Write-Pass "$checkedModules 个关键模块全部导入成功（sqlite3、mcp、dashscope、dotenv、memory_system.mcp_server）。"
+            Write-Pass "$checkedModules 项关键导入与语言解析检查全部通过（含全部语法包）。"
         }
         if ($probeExit -ne 0 -and $checkedModules -eq $expected) {
             Write-Info "子进程退出码非 0，请结合上面的失败项一起看。"

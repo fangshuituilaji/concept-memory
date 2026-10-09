@@ -10,7 +10,19 @@
 
 0.x 阶段：破坏性变更也走 MINOR，但必须在下面明确标注 **BREAKING**。
 
-## [Unreleased]
+## [0.4.0] - 2026-10-09
+
+### 新增
+
+- 默认扫描 Python、Markdown、TypeScript/TSX、JavaScript/JSX、Java、Go、Rust、C/C++、C#；从本地解析器提取主要类型、函数、方法与准确行号。
+- Windows x64 离线包自带并锁定全部 Tree-sitter grammar，目标机器无需安装语言运行时或编译器。
+- 卡片保存规范 `language_id`，qwen-flash 概念生成输入使用正确的语言围栏；多语言解析器版本进入增量状态与概念缓存签名。
+- 同一限定名下的声明、实现和重载保留各自源码位置；短名称跨作用域歧义时标为未锚定。
+
+### BREAKING
+
+- 概念生成与检索必须使用 qwen-flash；移除本地离线概念生成器与 `memory-concepts --offline`，缺 Key、模型失败或安全策略拒绝时明确报错，不生成本地替代概念。
+- 首次升级会迁移文件状态表并重新分析缺少 parser signature 的文件；旧生成草稿不复用，扫描失败时保留旧卡片。
 
 ## [0.3.0] - 2026-10-03
 

@@ -14,7 +14,7 @@ from memory_system import (
     analyze_path,
 )
 from memory_system.pipeline import cards_to_json
-from memory_system.synthesis import ConceptDraft, OfflineConceptSynthesizer
+from memory_system.synthesis import ConceptDraft
 
 
 class StaticSynthesizer:
@@ -92,19 +92,6 @@ def sort_values(values):
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0].metadata["validation_status"], "unanchored")
         self.assertEqual(cards[0].metadata["unanchored_evidence"], ["Missing.symbol"])
-
-    def test_offline_fallback_stays_within_file_limit(self) -> None:
-        source = Path("src/memory_system/extractor.py").resolve()
-        cards = analyze_path(
-            source,
-            synthesizer=OfflineConceptSynthesizer(
-                ConceptSynthesisConfig(target_concepts=3, max_concepts=9)
-            ),
-        )
-        self.assertGreaterEqual(len(cards), 2)
-        self.assertLessEqual(len(cards), 9)
-        self.assertTrue(all(card.kind is ConceptKind.CONCEPT for card in cards))
-        self.assertTrue(all(len(card.name) <= 80 for card in cards))
 
     def test_json_round_trip(self) -> None:
         location = SourceLocation(

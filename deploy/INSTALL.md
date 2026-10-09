@@ -1,6 +1,6 @@
 # concept-memory 离线包安装说明（读者：安装方 AI agent）
 
-本包是 Windows x64 离线包，**自带 Python 3.11 运行时与全部依赖**：目标机器不需要联网、不需要预装 Python、不需要 pip，也不需要管理员权限（只要包目录可读写）。
+本包是 Windows x64 离线包，**自带 Python 3.11 运行时与全部依赖（包括 Python、Markdown、TypeScript/TSX、JavaScript/JSX、Java、Go、Rust、C/C++、C# 的解析器）**：目标机器不需要联网安装语法包、不需要预装 Python、不需要 pip，也不需要管理员权限（只要包目录可读写）。概念生成和检索仍通过 qwen-flash 在线完成。
 
 已有完整包时保留下面的离线安装路径；希望用户只发一句会话指令时，先读包内 `install/ONE_MESSAGE_INSTALL.md`（仓库根 `INSTALL.md`）。该入口由 agent 自动下载、校验并注册当前客户端，不局限于下面列出的客户端。运行程序和依赖无需联网安装，但下载分发包、Key 验证、扫描合成与检索需要联网。
 

@@ -484,7 +484,7 @@ def main(argv=None) -> int:
     if args.skip_tests:
         cout("  已按 --skip-tests 跳过测试（风险自负）。")
     else:
-        run([test_python, "-m", "pytest", "-q"], cwd=REPO_ROOT)
+        run([test_python, "-m", "pytest", "-q", "tests"], cwd=REPO_ROOT)
         cout("  测试通过。")
 
     # --- 4) 构建离线包 ----------------------------------------------------

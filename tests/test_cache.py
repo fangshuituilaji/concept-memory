@@ -38,12 +38,14 @@ class CacheKeyTests(unittest.TestCase):
                 "model_version",
                 "prompt_version",
                 "generation_config",
+                "analysis_signature",
             },
         )
         self.assertNotEqual(first, self._key(source_digest="digest-2"))
         self.assertNotEqual(first, self._key(model_name="other-model"))
         self.assertNotEqual(first, self._key(model_version="2026-02"))
         self.assertNotEqual(first, self._key(prompt_version="phase1-v2"))
+        self.assertNotEqual(first, self._key(analysis_signature="new-parser"))
         self.assertNotEqual(
             first,
             self._key(generation_config={"temperature": 0.2, "top_p": 0.8}),

@@ -126,6 +126,7 @@ class CacheKey:
     # content.  Identical source/configuration can therefore be reused after a
     # file is moved or copied.
     file_path: str | None = field(default=None, compare=False, hash=False)
+    analysis_signature: str = "current-source-facts-v1"
 
     def __post_init__(self) -> None:
         if not isinstance(self.source_digest, str) or not self.source_digest.strip():
@@ -134,6 +135,8 @@ class CacheKey:
             raise ValueError("model_name must be a non-empty string")
         if not isinstance(self.prompt_version, str) or not self.prompt_version.strip():
             raise ValueError("prompt_version must be a non-empty string")
+        if not isinstance(self.analysis_signature, str) or not self.analysis_signature.strip():
+            raise ValueError("analysis_signature must be a non-empty string")
         if self.model_version is not None and not isinstance(self.model_version, str):
             raise TypeError("model_version must be a string or None")
         if not isinstance(self.generation_config, Mapping):
@@ -177,6 +180,7 @@ class CacheKey:
             "model_version": self.model_version,
             "prompt_version": self.prompt_version,
             "generation_config": json.loads(self.generation_config_json),
+            "analysis_signature": self.analysis_signature,
         }
         return payload
 
@@ -217,6 +221,7 @@ class CacheKey:
             prompt_version=str(data["prompt_version"]),
             generation_config=dict(data.get("generation_config", {})),
             file_path=data.get("file_path"),
+            analysis_signature=str(data.get("analysis_signature", "legacy")),
         )
 
     def __hash__(self) -> int:

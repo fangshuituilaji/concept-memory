@@ -1,0 +1,11 @@
+# Pinned parser runtime for the supported Windows x64, CPython 3.11 bundle.
+# Wheel hashes are verified for the exact cp311/abi3 win_amd64 artifacts.
+tree-sitter==0.26.0 --hash=sha256:0f8793fd18ad7eec276ed4b51c097b4bf2002b357259b66b0d75db1f3f41c754
+tree-sitter-c==0.24.2 --hash=sha256:abb549225091f7b25df2dd3a0143ece6e208f7055d8bcb4700b41ee79b9ef1e1
+tree-sitter-c-sharp==0.23.5 --hash=sha256:41a28cfa3d9ea50f5629e44550a03188c8fbd5079803dfc03554b6fd594b33fa
+tree-sitter-cpp==0.23.4 --hash=sha256:68606a45bea92669d155399e1239f771a7767d8683cd8f8e30e7d813107030ca
+tree-sitter-go==0.25.0 --hash=sha256:30d4ada57a223dfc2c32d942f44d284d40f3d1215ddcf108f96807fd36d53022
+tree-sitter-java==0.23.5 --hash=sha256:1ee45e790f8d31d416bc84a09dac2e2c6bc343e89b8a2e1d550513498eedfde7
+tree-sitter-javascript==0.25.0 --hash=sha256:e5ed840f5bd4a3f0272e441d19429b26eedc257abe5574c8546da6b556865e3c
+tree-sitter-rust==0.24.2 --hash=sha256:4529c125d928882ddfb879fdc6bc0704913261ecc078b6fa7902559e0daf200d
+tree-sitter-typescript==0.23.2 --hash=sha256:3f730b66396bc3e11811e4465c41ee45d9e9edd6de355a58bbbc49fa770da8f9

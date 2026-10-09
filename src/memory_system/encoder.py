@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .extractor import SourceFacts, SymbolFact
+from .languages import LANGUAGES, resolve_language
 from .models import ConceptCard, ConceptKind, SourceLocation
 from .synthesis import ConceptDraft, ConceptSynthesisConfig, ConceptSynthesizer
 
@@ -70,6 +71,10 @@ class FileConceptEncoder:
             }
             for symbol in evidence
         ]
+        language_spec = (
+            LANGUAGES.get(facts.language_id or "")
+            or resolve_language(facts.file.path)
+        )
         metadata: dict[str, Any] = {
             "concept_index": index,
             "file_concept_count": count,
@@ -78,6 +83,7 @@ class FileConceptEncoder:
             "unanchored_evidence": list(unanchored),
             "validation_status": validation_status,
             "source_language": facts.file.path.suffix.lstrip(".") or "unknown",
+            "language_id": language_spec.language_id if language_spec else "unknown",
             "source_facts": "local-parser",
         }
         metadata.update(_synthesis_metadata(self.synthesizer, self.config))
@@ -96,7 +102,7 @@ class FileConceptEncoder:
                 "generated_by",
                 "qwen-flash"
                 if self.synthesizer.__class__.__name__.startswith("DashScope")
-                else "offline-fallback",
+                else "unknown",
             ),
         )
 
@@ -108,7 +114,7 @@ def _synthesis_metadata(
     synth_config = getattr(synthesizer, "config", config)
     generation_config = getattr(synth_config, "generation_config", {})
     generated_by = str(getattr(synthesizer, "generated_by", "") or "")
-    model_name = generated_by or getattr(synth_config, "model", "offline-fallback")
+    model_name = generated_by or getattr(synth_config, "model", "unknown")
     return {
         "model_name": model_name,
         "model_version": getattr(synth_config, "model_version", None),
@@ -130,16 +136,28 @@ def _resolve_evidence(
         query = raw_query.strip()
         if not query:
             continue
-        matched = False
-        for symbol in symbols:
-            if query in {symbol.name, symbol.qualified_name} or symbol.qualified_name.endswith(
-                "." + query
-            ):
+        exact = [symbol for symbol in symbols if symbol.qualified_name == query]
+        if exact:
+            matches = exact
+        else:
+            candidates = [
+                symbol
+                for symbol in symbols
+                if symbol.name == query
+                or symbol.qualified_name.endswith("." + query)
+                or symbol.qualified_name.endswith("::" + query)
+            ]
+            qualified_names = {symbol.qualified_name for symbol in candidates}
+            matches = (
+                [symbol for symbol in candidates if symbol.qualified_name in qualified_names]
+                if len(qualified_names) == 1
+                else []
+            )
+        if matches:
+            for symbol in matches:
                 if symbol not in resolved:
                     resolved.append(symbol)
-                matched = True
-                break
-        if not matched and query not in missing:
+        elif query not in missing:
             missing.append(query)
     return resolved, tuple(missing)
 

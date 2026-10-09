@@ -61,7 +61,7 @@ class ConceptCard:
     source_excerpt: str
     source_digest: str
     metadata: dict[str, Any] = field(default_factory=dict)
-    generated_by: str = "offline-fallback"
+    generated_by: str = "unknown"
 
     @classmethod
     def create(
@@ -75,7 +75,7 @@ class ConceptCard:
         location: SourceLocation,
         source_excerpt: str,
         metadata: Mapping[str, Any] | None = None,
-        generated_by: str = "offline-fallback",
+        generated_by: str = "unknown",
         source_digest: str | None = None,
     ) -> "ConceptCard":
         digest = source_digest or sha256(source_excerpt.encode("utf-8")).hexdigest()
@@ -131,5 +131,5 @@ class ConceptCard:
             source_excerpt=str(data.get("source_excerpt", "")),
             source_digest=str(data.get("source_digest", "")),
             metadata=dict(data.get("metadata", {})),
-            generated_by=str(data.get("generated_by", "offline-fallback")),
+            generated_by=str(data.get("generated_by", "unknown")),
         )

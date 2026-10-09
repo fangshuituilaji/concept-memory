@@ -93,6 +93,32 @@ REQUIREMENTS = [
     "typer",
 ]
 
+
+def parser_requirements_file() -> Path:
+    return Path(__file__).resolve().with_name("parser-requirements.txt")
+
+
+def parser_requirement_names() -> tuple[str, ...]:
+    """Read exact, hash-locked parser distribution names for the Windows bundle."""
+
+    lock = parser_requirements_file()
+    if not lock.is_file():
+        fail("多语言解析依赖锁文件缺失：%s" % lock)
+    names = []
+    for raw_line in lock.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        requirement = line.split()[0]
+        if "==" not in requirement or not any(
+            item.startswith("--hash=sha256:") for item in line.split()[1:]
+        ):
+            fail("解析依赖必须固定版本并包含 SHA256：%s" % line)
+        names.append(requirement.split("==", 1)[0])
+    if len(names) != 9 or len(set(names)) != len(names):
+        fail("解析依赖锁文件必须包含 9 个不同的 Tree-sitter 包。")
+    return tuple(names)
+
 # 这些包必须真的装进包里，装不上就终止（其余依赖缺失只告警）
 CRITICAL_REQUIREMENTS = ("mcp", "dashscope", "python-dotenv")
 
@@ -414,6 +440,35 @@ SELFCHECK_CODE = (
 )
 
 
+PARSER_SELFCHECK_CODE = r'''from pathlib import Path
+from memory_system.extractor import TreeSitterSourceAnalyzer
+from memory_system.readers import CodeFile
+
+samples = [
+    ("Python", "sample.py", "def smoke_python(): return 1\n"),
+    ("Markdown", "notes.md", "# Smoke\n"),
+    ("TypeScript", "sample.ts", "function smoke_ts(): number { return 1; }\n"),
+    ("TSX", "sample.tsx", "const Smoke = () => <main />;\n"),
+    ("JavaScript", "sample.js", "function smoke_js() { return 1; }\n"),
+    ("JSX", "sample.jsx", "export default function Smoke() { return <main />; }\n"),
+    ("Java", "Sample.java", "class Sample { void smoke() {} }\n"),
+    ("Go", "sample.go", "package sample\nfunc smoke() {}\n"),
+    ("Rust", "sample.rs", "fn smoke() {}\n"),
+    ("C", "sample.c", "int smoke(void) { return 1; }\n"),
+    ("C++ header", "sample.h", "template<class T> class Store { public: T get(); };\n"),
+    ("C++", "sample.cpp", "namespace sample { class Store {}; }\n"),
+    ("C#", "Sample.cs", "class Sample { void Smoke() {} }\n"),
+]
+analyzer = TreeSitterSourceAnalyzer()
+for label, filename, source in samples:
+    path = Path(filename)
+    facts = analyzer.analyze(CodeFile(path=path, relative_path=filename, text=source))
+    if not facts.symbols:
+        raise RuntimeError(f"{label} parser returned no symbols")
+print("parser smoke PASS: " + ", ".join(label for label, _, _ in samples))
+'''
+
+
 def selfcheck(pkg_root: Path, python_exe: Path) -> None:
     """用包内 python 验证解释器、sqlite3 与关键依赖。失败即终止。"""
 
@@ -428,6 +483,16 @@ def selfcheck(pkg_root: Path, python_exe: Path) -> None:
             "请检查：包内 python\\DLLs\\_sqlite3.pyd 是否完整、site-packages 是否装好依赖、"
             "PYTHONPATH 是否指向 python\\Lib\\site-packages 与 src。"
         )
+    code, output = run(
+        [python_exe, "-c", PARSER_SELFCHECK_CODE], env=bundled_env(pkg_root, python_exe),
+        allow_fail=True,
+    )
+    if code != 0:
+        fail(
+            "包内多语言解析自检失败；Tree-sitter 核心和所有 grammar 都必须随包安装。\n"
+            + "\n".join(output.splitlines()[-20:])
+        )
+    cout("  " + output.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +683,15 @@ IMPORT_NAMES = {
     "attrs": "attr",
     "click": "click",
     "typer": "typer",
+    "tree-sitter": "tree_sitter",
+    "tree-sitter-c": "tree_sitter_c",
+    "tree-sitter-c-sharp": "tree_sitter_c_sharp",
+    "tree-sitter-cpp": "tree_sitter_cpp",
+    "tree-sitter-go": "tree_sitter_go",
+    "tree-sitter-java": "tree_sitter_java",
+    "tree-sitter-javascript": "tree_sitter_javascript",
+    "tree-sitter-rust": "tree_sitter_rust",
+    "tree-sitter-typescript": "tree_sitter_typescript",
 }
 
 
@@ -845,6 +919,64 @@ def install_requirements(
 
 
 # ---------------------------------------------------------------------------
+# Locked Tree-sitter parser packages
+# ---------------------------------------------------------------------------
+
+
+def install_parser_requirements(
+    pkg_root: Path,
+    packager_python: Path,
+    wheel_dir: Path,
+    cache_dir: Path,
+    site_packages: Path,
+    *,
+    allow_network: bool,
+) -> None:
+    """Install every parser wheel from the hash-locked Windows requirements file."""
+
+    lock = parser_requirements_file()
+    names = parser_requirement_names()
+    env = child_env(PIP_CACHE_DIR=str(cache_dir))
+    wheel_dir.mkdir(parents=True, exist_ok=True)
+    if allow_network:
+        code, output = run(
+            [
+                packager_python, "-m", "pip", "download", "--only-binary=:all:",
+                "--require-hashes", "--find-links", wheel_dir, "--dest", wheel_dir,
+                "-r", lock,
+            ],
+            env=env,
+            allow_fail=True,
+        )
+        if code != 0:
+            fail(
+                "无法按 parser-requirements.txt 下载/校验所有 Windows x64 grammar wheel。\n"
+                + "\n".join(output.splitlines()[-20:])
+            )
+    code, output = run(
+        [
+            packager_python, "-m", "pip", "install", "--no-index",
+            "--find-links", wheel_dir, "--require-hashes", "--no-compile",
+            "--no-warn-script-location", "--target", site_packages, "-r", lock,
+        ],
+        env=env,
+        allow_fail=True,
+    )
+    if code != 0:
+        fail(
+            "无法离线安装锁定的多语言 grammar wheels。\n"
+            + "\n".join(output.splitlines()[-20:])
+        )
+
+    modules = [IMPORT_NAMES[name] for name in names]
+    check = probe_modules(pkg_root, pkg_root / "python" / "python.exe", modules)
+    missing = [name for name, ok in check.items() if not ok]
+    if missing:
+        fail("包内 Python 无法导入 parser grammar：%s" % ", ".join(missing))
+    cout("  多语言 grammar 已按 SHA256 锁定并安装：%s" % ", ".join(names))
+
+
+# ---------------------------------------------------------------------------
 # 打包主流程
 # ---------------------------------------------------------------------------
 
@@ -986,6 +1118,14 @@ def main(argv=None) -> int:
     if wheels_arg is not None and not list(wheels_arg.glob("*.whl")):
         cout("  --wheels 目录里没有 .whl，将改为联网下载依赖 wheel。")
     install_requirements(pkg_root, packager_python, wheel_dir, pip_cache, site_packages)
+    install_parser_requirements(
+        pkg_root,
+        packager_python,
+        wheel_dir,
+        pip_cache,
+        site_packages,
+        allow_network=wheels_arg is None,
+    )
 
     # --- 5) 复制源码 -----------------------------------------------------
     step(5, total_steps, "复制 memory_system 源码到包内 src")

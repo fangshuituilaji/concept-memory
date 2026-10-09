@@ -3,15 +3,13 @@
 # 唯一版本源是 pyproject.toml 的 [project] version；这里必须与它一致，
 # 由 tests/test_version.py 与 deploy/release.py 双重校验。
 # 离线包通过 PYTHONPATH 加载源码、没有安装元数据可读，所以这里保留字面量。
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .enrichment import (
     ConceptDraft,
     ConceptSynthesisConfig,
     DashScopeQwenSynthesizer,
     ModelConfig,
-    NoOpEnricher,
-    OfflineConceptSynthesizer,
     OpenAICompatibleEnricher,
     create_default_synthesizer,
 )
@@ -48,8 +46,6 @@ __all__ = [
     "SourceSendingPolicy",
     "DashScopeQwenSynthesizer",
     "ModelConfig",
-    "NoOpEnricher",
-    "OfflineConceptSynthesizer",
     "OpenAICompatibleEnricher",
     "SourceLocation",
     "analyze_path",

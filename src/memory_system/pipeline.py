@@ -13,6 +13,7 @@ from typing import Any, Iterable
 from .cache import CacheKey, ConceptCache
 from .encoder import FileConceptEncoder
 from .extractor import SourceFacts, TreeSitterSourceAnalyzer
+from .languages import parser_signature_for_path
 from .models import ConceptCard
 from .readers import DEFAULT_EXTENSIONS, CodeFile, discover_code_files, read_code_file
 from .security import JsonlAuditRecorder, SecurityPolicy, SourceSendingPolicy
@@ -20,7 +21,6 @@ from .synthesis import (
     ConceptDraft,
     ConceptSynthesisConfig,
     ConceptSynthesizer,
-    OfflineConceptSynthesizer,
     create_default_synthesizer,
 )
 
@@ -94,12 +94,7 @@ def analyze_path(
         else (ConceptCache(cache_path) if cache_path is not None else None)
     )
     resolved_policy = security_policy or SecurityPolicy(
-        root=root,
-        source_sending_policy=(
-            "offline"
-            if isinstance(resolved_synthesizer, OfflineConceptSynthesizer)
-            else "online"
-        ),
+        root=root, source_sending_policy="online"
     )
     if files is None:
         discovered_files = discover_code_files(target, extensions=extensions)
@@ -131,21 +126,18 @@ def analyze_path(
                     model=resolved_config.model,
                     config=resolved_config.to_dict(),
                 )
-            if not decision.allowed and not isinstance(
-                resolved_synthesizer, OfflineConceptSynthesizer
-            ):
-                file_synthesizer = OfflineConceptSynthesizer(resolved_config)
+            if not decision.allowed:
+                raise PermissionError(
+                    f"Refusing to send {code_file.relative_path} to qwen-flash: "
+                    f"{decision.reason}"
+                )
             effective_config = getattr(file_synthesizer, "config", resolved_config)
             generated_by = getattr(
                 file_synthesizer,
                 "generated_by",
                 effective_config.model,
             )
-            effective_model = (
-                "offline-fallback"
-                if generated_by == "offline-fallback"
-                else str(generated_by or effective_config.model)
-            )
+            effective_model = str(generated_by or effective_config.model)
             cache_key = CacheKey(
                 source_digest=facts.source_digest,
                 model_name=effective_model,
@@ -153,6 +145,7 @@ def analyze_path(
                 prompt_version=effective_config.prompt_version,
                 generation_config=effective_config.to_dict(),
                 file_path=code_file.path,
+                analysis_signature=parser_signature_for_path(code_file.path),
             )
             drafts: list[ConceptDraft] | None = None
             if active_cache is not None:
